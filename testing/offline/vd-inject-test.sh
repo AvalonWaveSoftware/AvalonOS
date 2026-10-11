@@ -27,7 +27,7 @@ p = Path(sys.argv[1])
 base = (p / 'base.iso').read_bytes()
 sector = 2048
 # Place every injection beyond the original image, outside file/ESP extents,
-# but inside the validator's 1024-LBA search window.
+# past the original image (not a layout-derived candidate).
 lba = (len(base) + sector - 1) // sector
 assert 18 <= lba < 990, 'synthetic image unexpectedly large'
 prefix = base.ljust(lba * sector, b'\0')
@@ -45,7 +45,8 @@ assert descriptors[0][0] == 1
 def write(name, payload):
     (p / name).write_bytes(prefix + payload)
 
-# Control proves appended, same-volume descriptor sets can be exempted.
+# P-L16: an appended same-volume descriptor set is not a layout-derived
+# candidate and must not be exempted.
 write('same-volume.iso', b''.join(descriptors))
 # Literal sector-aligned magic, with no descriptor header or valid set.
 write('aligned-magic.iso', b'CD001'.ljust(sector, b'\0'))
@@ -58,12 +59,32 @@ assert foreign[40:72] != descriptors[0][40:72]
 write('different-volume.iso', foreign)
 print(f'injections start at LBA {lba} (byte {lba * sector})')
 PY
+# S1: append a same-volume ISO whose payload is the public TEST key split
+# into 78 x 16-byte files. Must FAIL (P-L16). Public key only; no secrets.
+K="$ROOT/keys/RPM-GPG-KEY-avalonos-test"
+mkdir "$T/s1"
+python3 - "$K" "$T/s1" <<'PY'
+import pathlib, sys
+key = pathlib.Path(sys.argv[1]).read_bytes()
+out = pathlib.Path(sys.argv[2])
+# 78 * 16 = 1248 bytes; pad/truncate the public key material to that size
+# so the split is exact. Content is public TEST key bytes only.
+blob = (key * ((1248 // len(key)) + 1))[:1248]
+for i in range(78):
+    (out / f"p{i:02d}").write_bytes(blob[i*16:(i+1)*16])
+PY
+env -u SOURCE_DATE_EPOCH xorriso -as mkisofs -R -V VD_INJECT \
+    -o "$T/s1-inner.iso" "$T/s1" >"$T/s1-build.log" 2>&1 || {
+        cat "$T/s1-build.log" >&2; exit 1;
+    }
+# Append the inner ISO after the base image (same volume ID, not a candidate).
+cat "$T/base.iso" "$T/s1-inner.iso" > "$T/s1.iso"
 pass=0; fails=0
 check() {
-    local name="$1" expected="$2" rc=0
+    local name="$1" expected="$2" re="${3:-ISO9660 data at offset}" rc=0
     AVALONOS_TEST_BUILD=0 "$ROOT/scripts/check-iso-unowned.sh" "$T/$name.iso" >"$T/out" 2>&1 || rc=$?
     if { [ "$expected" = accept ] && [ "$rc" = 0 ]; } ||
-       { [ "$expected" = reject ] && [ "$rc" = 1 ] && grep -q 'ISO9660 data at offset' "$T/out"; }; then
+       { [ "$expected" = reject ] && [ "$rc" = 1 ] && grep -qE "$re" "$T/out"; }; then
         echo "ok    $name ($expected)"; pass=$((pass + 1))
     else
         echo "FAIL  $name (expected $expected, exit $rc)"
@@ -71,9 +92,11 @@ check() {
     fi
 }
 check base accept
-check same-volume accept
+check same-volume reject
 check aligned-magic reject
 check invalid-pvd reject
 check different-volume reject
+# S1 may fail on the inner ISO's CD001 or on the split public-key payload.
+check s1 reject 'ISO9660 data at offset|foreign public-key|gap-.*material'
 echo "vd-inject-test: $pass ok, $fails failed"
 [ "$fails" = 0 ]

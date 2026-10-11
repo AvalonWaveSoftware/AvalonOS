@@ -115,3 +115,4 @@ off; see step 3); the first boot may take a little longer.
   it. In QEMU/libvirt use a virtio GPU (`-vga virtio`, or `virtio-vga-gl` with
   `gl=on` for 3D). On a machine that also has a real GPU, plug the monitor
   into that GPU. The text console (Ctrl+Alt+F2) still works.
+- After login, Alacritty (Super+Return) does not launch in a virtual machine. This is a known limitation.

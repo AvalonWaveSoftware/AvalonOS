@@ -12,6 +12,7 @@ AvalonOS source repository for the daily user.
 | `docs/hardware.md` | this laptop |
 | `docs/configs.md` | overlay file map |
 | `docs/iso.md` | netinst remaster, install-time signature checks, kickstart, QA test builds |
+| `docs/RELEASE-NOTES.md` | source notes for v0.1.0-8 (do not use to edit published v0.1.0-7 notes) |
 | `kickstart/AvalonOS.ks` | kickstart **template** (placeholders, no credentials) |
 | `kickstart/packages.inc` | ISO package list |
 | `packaging/README.md` | golden tarball |

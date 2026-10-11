@@ -459,28 +459,43 @@ def scan_file(path, label, text_ok, depth=0, fatal=True, payload_rel=None):
         skip = rpm_payload_offset(path) if kind == "rpm" else None   # inspected by check_rpm (with its doc rules)
         for off in sorted(carves):
             if off != skip: carve(path, off, label, text_ok, depth)
-        # P-L13: mid-file zlib has no unique magic. Carve in --gaps and in
-        # files up to 64 MiB (larger files still get start-of-file zlib via
-        # detect). Only headers that trial-inflate to >= 16 bytes are carved.
-        zmax = 64 << 20
+        # P-L13 / P-I16: mid-file zlib has no unique magic. Carve in --gaps
+        # and in files up to 64 MiB (larger files still get start-of-file
+        # zlib via detect). In --gaps, walk the whole gap in 64 MiB windows
+        # with 8 KiB overlap so a stream past the first 64 MiB is still
+        # carved. Only headers that trial-inflate to >= 16 bytes are carved.
+        zwin = 64 << 20
+        zoverlap = 8192
         # RPM payloads are unpacked and scanned as files; skip the RPM wrapper.
-        if kind != "rpm" and (GAPS or os.path.getsize(path) <= zmax):
-            with open(path, "rb") as zf:
-                zdata = zf.read(zmax)
-            zoffs = []
-            for zm in re.finditer(b"[\x08\x18\x28\x38\x48\x58\x68\x78]", zdata):
-                i = zm.start()
-                if i == 0 or i + 1 >= len(zdata) or not is_zlib(zdata[i:i+2]):
-                    continue
-                try:
-                    zd = zlib.decompressobj(15)
-                    zout = zd.decompress(zdata[i:i+4096], 64)
-                except zlib.error:
-                    continue
-                if len(zout) >= 16:
-                    zoffs.append(i)
-                if len(zoffs) > MAXCARVE:
-                    bad(f"{label}: more than {MAXCARVE} embedded zlib streams; cannot be inspected"); return
+        size = os.path.getsize(path)
+        if kind != "rpm" and (GAPS or size <= zwin):
+            zoffs, zseen, zpos = [], set(), 0
+            while zpos < size:
+                with open(path, "rb") as zf:
+                    zf.seek(zpos)
+                    zdata = zf.read(zwin)
+                if not zdata:
+                    break
+                for zm in re.finditer(b"[\x08\x18\x28\x38\x48\x58\x68\x78]", zdata):
+                    i = zm.start()
+                    abs_off = zpos + i
+                    if abs_off in zseen:
+                        continue
+                    if abs_off == 0 or i + 1 >= len(zdata) or not is_zlib(zdata[i:i+2]):
+                        continue
+                    try:
+                        zd = zlib.decompressobj(15)
+                        zout = zd.decompress(zdata[i:i+4096], 64)
+                    except zlib.error:
+                        continue
+                    if len(zout) >= 16:
+                        zoffs.append(abs_off)
+                        zseen.add(abs_off)
+                    if len(zoffs) > MAXCARVE:
+                        bad(f"{label}: more than {MAXCARVE} embedded zlib streams; cannot be inspected"); return
+                if zpos + len(zdata) >= size:
+                    break
+                zpos += zwin - zoverlap
             for off in zoffs:
                 if off != skip:
                     decode_stream(file_chunks(path, off), "zlib", f"{label}@{off}", text_ok, depth, False)

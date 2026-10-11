@@ -87,15 +87,16 @@ with open(iso, "rb") as f:
             open(os.path.join(out, f"gap-{a:012d}-{b - a}"), "wb").write(d)
 print(f"{len(gaps)} unowned ranges, {total} bytes, {len(os.listdir(out))} not all-zero")
 PY
-# R7-B1: exempt only this ISO's structurally validated volume-descriptor
-# sectors (type, CD001, version 1, a terminated set starting with a PVD).
-# xorriso 1.5.8 with partition_offset writes additional valid sets (e.g. at
-# LBA 64-66 and 80-81) whose PVDs are not byte-identical to the set at 16.
-# This is not a wider LBA bound: ISO9660 magic elsewhere still fails.
-python3 - "$ISO" "$T/vd-offsets" <<'PY'
+# R7-B1 / P-L16: exempt only structurally validated volume-descriptor
+# sectors at locations xorriso actually writes, derived from
+# -report_system_area (principal at 16, partition-offset copies, and the
+# GPT-start views including 64/80). This is not a scan of LBA 16..1024
+# and not a wider bound: a same-volume set elsewhere (e.g. an appended
+# embedded ISO) is not exempted.
+python3 - "$ISO" "$T/vd-offsets" "$T/sa" "$p2s" <<'PY'
 import os, sys
-SECTOR, SCAN_LBAS, TYPES = 2048, 1024, {0, 1, 2, 3, 255}
-iso, outp = sys.argv[1], sys.argv[2]
+SECTOR, TYPES = 2048, {0, 1, 2, 3, 255}
+iso, outp, sa_path, esp_start = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 iso_size = os.path.getsize(iso)
 iso_lbas = iso_size // SECTOR
 
@@ -146,7 +147,44 @@ def read_set(f, start_lba, expect_vol_id=None):
             return sectors if i > 0 else None
     return None
 
-allowed, seen = [], set()
+# P-L16: extra sets are accepted only at locations xorriso actually uses,
+# derived from -report_system_area (not a scan of LBA 16..1024).
+#   * LBA 16 (principal) and 16+partition_offset
+#   * each non-ESP GPT partition start as an ISO LBA (start_512/4) and +po
+#   * the same GPT start number treated as a 2048-byte LBA, and +po
+#     (xorriso 1.5.8 writes the 64/80 copies this way when start_512 is 64)
+def candidates(sa_text, esp_start_512):
+    cands, po, gpt = {16}, 0, []
+    for line in sa_text.splitlines():
+        w = line.split()
+        if len(w) >= 4 and w[0] == "Partition" and w[1] == "offset" and w[2] == ":":
+            try:
+                po = int(w[3])
+            except ValueError:
+                pass
+        if len(w) >= 8 and w[0] == "GPT" and w[1] == "start" and w[2] == "and" and w[3] == "size" and w[4] == ":":
+            try:
+                gpt.append((int(w[5]), int(w[6]), int(w[7])))
+            except ValueError:
+                pass
+    if po > 0:
+        cands.add(16 + po)
+    for _n, start512, _sz in gpt:
+        if start512 == esp_start_512:
+            continue
+        if start512 % 4 == 0:
+            iso_start = start512 // 4
+            cands.add(iso_start)
+            if po > 0:
+                cands.add(iso_start + po)
+        cands.add(start512)
+        if po > 0:
+            cands.add(start512 + po)
+    return {c for c in cands if 16 <= c < iso_lbas}
+
+sa_text = open(sa_path, encoding="utf-8", errors="replace").read() if os.path.exists(sa_path) else ""
+starts = candidates(sa_text, esp_start)
+allowed, seen, sets = [], set(), []
 with open(iso, "rb") as f:
     principal = read_set(f, 16)
     if not principal:
@@ -154,9 +192,8 @@ with open(iso, "rb") as f:
     f.seek(16 * SECTOR)
     vol_id = f.read(SECTOR)[40:72]
     seen.add(16)
-    sets = [principal]
-    last = min(SCAN_LBAS, max(16, iso_lbas - 1))
-    for lba in range(16, last + 1):
+    sets.append(principal)
+    for lba in sorted(starts):
         if lba in seen:
             continue
         st = read_set(f, lba, vol_id)

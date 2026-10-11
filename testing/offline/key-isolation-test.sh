@@ -369,5 +369,21 @@ PY
 rejectw "V18 base64(gzip(.)) nested 4 times fails closed at the depth limit" 'encoding nest exceeds depth|cannot be inspected|material' rel "$KI" "$T/r"
 fresh "$REL"; gpg --batch --homedir "$(mktemp -d -p "$T")" --dearmor < "$ROOT/keys/RPM-GPG-KEY-avalonos" > "$T/r/vendor.asc"
 accept "P10 production key as a BINARY key file named .asc (not a signature), release mode" rel "$KI" "$T/r"
+# P-I16: mid-file zlib past the first 64 MiB of a --gaps file must still be carved.
+fresh "$REL"
+python3 - "$K" "$T/r/gap-000000000000-67108880" <<'PY'
+import sys, zlib, os
+from pathlib import Path
+key = Path(sys.argv[1]).read_bytes()
+path = Path(sys.argv[2])
+off = 64 << 20
+payload = zlib.compress(key)
+# Sparse prefix: cheap 64 MiB hole, then a zlib stream of the public TEST key.
+with open(path, "wb") as f:
+    f.truncate(off + len(payload))
+    f.seek(off)
+    f.write(payload)
+PY
+rejectw "V19 zlib stream past 64 MiB in a --gaps file carrying the TEST key" 'zlib\].*material|@.*\[zlib\]' rel "$KI" --gaps "$T/r"
 echo "key-isolation-test: $pass ok, $fails failed"
 [ "$fails" = 0 ]

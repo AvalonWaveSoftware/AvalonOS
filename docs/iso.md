@@ -101,9 +101,10 @@ kickstarts to equal `render-kickstart.sh` output. The default path (and
 `--full`; `--quick` turns this compare off) compares every
 other file, directory and link, the ESP, the GRUB configs (upstream + our
 patches) and `eltorito.img` (except the bytes xorriso rewrites) with
-upstream. The raw ISO/ESP scan on the default path also caught a gzip'd
-TEST key in ESP free space (P-L14; `--full` additionally deep-compares the
-ESP to upstream's ESP + grub.cfg). After the Codex coverage review (2026-11-14) the check also
+upstream. `--quick` may catch a gzip of the binary key in ESP free space;
+only the default path (and `--full`) ESP compare covers ESP free space in
+general (P-I15: a gzip of the armored TEST key passed `--quick` and failed
+default/`--full`). After the Codex coverage review (2026-11-14) the check also
 assembles OpenPGP partial-length packets, decodes hex runs and zlib streams,
 carves every ZIP local entry (concatenated zips), accepts any LZMA dictionary,
 reads V7 tar, treats a speculative stream that decodes completely as real
@@ -118,9 +119,12 @@ upstream's ESP plus our `grub.cfg` except FAT timestamps (tests:
 `testing/offline/iso-unowned-test.sh`). ISO9660 volume-descriptor sectors
 are exempted from the unowned-bytes ISO9660-magic check only when they are
 members of a structurally validated descriptor set (type, CD001, version 1,
-terminated, starting with a PVD); a `CD001` string anywhere else still
-fails (R7-B1). Mid-file squashfs, lz4 and erofs magics fail in whole files as well as in gaps; mid-file zlib streams are
-carved in `--gaps` and in files up to 64 MiB (P-L13). Nesting that still
+terminated, starting with a PVD) at a location derived from xorriso's
+`-report_system_area` (principal LBA 16, partition-offset copies, and the
+GPT-start views xorriso actually uses, including 64/80). A same-volume set
+elsewhere, including an appended embedded ISO, is not exempted (P-L16). A
+`CD001` string anywhere else still fails (R7-B1). Mid-file squashfs, lz4 and erofs magics fail in whole files as well as in gaps; mid-file zlib streams are
+carved in `--gaps` (the whole gap, in 64 MiB windows; P-I16) and in files up to 64 MiB (P-L13). A real squashfs (gzip compression) holding an armored key is reported as `[zlib] foreign public-key material` rather than `squashfs data`, because the payload is reached by mid-file zlib carving; it still fails (QA-L2). Nesting that still
 has decodable structure, armor or carve magic when the depth limit (6) is
 reached fails closed (P-L15).
 Not detectable by design: encrypted, XOR-ed or custom-encoded data, raw
@@ -270,6 +274,11 @@ Everything else is the unmodified upstream file.
   A full desktop on a lone display-only adapter would need a niri that
   renders with pixman (not in Fedora's niri 26.04).
 
+## Known limitations
+
+- **Alacritty in a virtual machine** (Master Chief, 2026-11-21 2:39pm CT): Alacritty does not launch in a virtual machine. This is a documented known limitation; it has not been investigated or changed in code.
+- Display-only adapters and NVIDIA Secure Boot are described under Installer behaviour above, and in How-to-Install.md.
+
 ## Test builds (QA only)
 
 Decision 2026-11-14 11:31 CT: "Strip the test-seed from release ISOs, keep it
@@ -297,7 +306,9 @@ Build a QA test ISO:
 2. Output: `out/AvalonOS-netinst-x86_64-TEST.iso`. Never publish it, and
    never upload a test repo as `avalonos-signed-repo.tar`.
 3. Check it with `AVALONOS_TEST_BUILD=1 scripts/verify-iso.sh out/AvalonOS-netinst-x86_64-TEST.iso`
-   (the default is the full check; pass `--quick` only for the weaker path).
+   (the default is the full check; pass `--quick` only for the weaker path —
+   `--quick` may catch a gzip'd key in ESP free space, but only default/`--full`
+   covers ESP free space).
 4. Seed a user: `tailwhip --user NAME` (installed with AvalonOS, or
    `scripts/tailwhip`) writes `avalonos-seed.conf` (yescrypt hash, never
    plaintext). Put it on a disk labelled `AVTESTSEED` and add

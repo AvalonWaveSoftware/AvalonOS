@@ -193,7 +193,7 @@ while read -r p; do
     case "$p" in ''|'#'*|-*|@*) continue;; esac
     rpm -q --whatprovides "$p" >/dev/null 2>&1 || { echo "AvalonOS: NOT INSTALLED: $p" >&2; missing=1; }
 done < /var/lib/avalonos/packages.inc
-[ "$missing" = 0 ] || echo "AvalonOS: WARNING: some packages.inc entries are missing (see above)" >&2
+[ "$missing" = 0 ] || { echo "AvalonOS: ERROR: some packages.inc entries are missing (see above)" >&2; exit 1; }
 if rpm -q openssh-server >/dev/null 2>&1; then
     echo "AvalonOS: openssh-server is installed although excluded" >&2; exit 1
 fi

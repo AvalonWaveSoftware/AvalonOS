@@ -66,6 +66,16 @@ def valid_name(name: str) -> str | None:
         return None
 
 
+def valid_password(name: str, password: str | None) -> str | None:
+    if not password:
+        return "enter a password"
+    if len(password) < 8:
+        return "password must be at least 8 characters"
+    if password == name:
+        return "password must not be the username"
+    return None
+
+
 class NameTaken(Exception):
     """useradd exit 9: the name appeared after validation; not ours to remove."""
 
@@ -75,6 +85,10 @@ def create_user(name: str, password: str | None, pw_hash: str | None = None) -> 
     Any failure removes the half-made user, so the next boot asks again."""
     if valid_name(name):  # defence in depth: callers validate too
         raise ValueError("invalid user name")
+    if pw_hash is None:
+        err = valid_password(name, password)
+        if err:
+            raise ValueError(err)
     try:
         r = subprocess.run(
             ["useradd", "-m", "-s", "/bin/bash", "-G", "wheel,video,input,render", "--", name],
@@ -273,8 +287,8 @@ def run_ui(stdscr) -> int:
                 idx += 1
                 continue
             err = valid_name(values[0]) or ""
-            if not err and not values[1]:
-                err = "enter a password"
+            if not err:
+                err = valid_password(values[0], values[1]) or ""
             if not err and values[1] != values[2]:
                 err = "passwords do not match"
             if err:

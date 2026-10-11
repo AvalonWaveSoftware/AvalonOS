@@ -17,7 +17,7 @@
 
 Name:           avalonos
 Version:        0.1.0
-Release:        7%{?dist}
+Release:        8%{?dist}
 Summary:        Meta-package that installs the complete desktop
 License:        Apache-2.0
 URL:            https://github.com/AvalonWaveSoftware/AvalonOS
@@ -441,6 +441,24 @@ fi
 %endif
 
 %changelog
+* Sat Nov 21 2026 AvalonOS <avalonos@localhost> - 0.1.0-8
+- Post-release Low batch on the 0.1.0-7 tree: ISO unowned-byte volume-descriptor
+  exemption is layout-derived (P-L16); U7 requires a PVD at LBA 80 or SKIP (P-L17);
+  mid-file zlib carving covers the whole --gaps window (P-I16); verify-iso prints
+  unowned summary lines on success (QA-L1); docs for --quick ESP coverage (P-I15),
+  squashfs-via-zlib reporting (QA-L2), LSP binary pins (P-L9), plugin full commits
+  (AOS-SEC-16), and bluetooth.service as an accepted residual (AOS-SEC-09)
+- Runtime: installer guard parses quoted/Anaconda cmdline tokens and refuses
+  repo/addrepo/noverifyssl/method, fail-closed without python3 (P-L10); missing
+  packages.inc entries abort the install (P-L3); first-boot password policy
+  (P-L5); net-menu uses nmcli passwd-file on connection up, never on
+  device wifi connect (AOS-SEC-10, R8-B1); PSK tempfile cleanup starts
+  immediately after mkstemp (P-L19); no /tmp pidfile fallback
+  (AOS-SEC-11); session login-shell re-exec quoting (AOS-SEC-12)
+- Docs: Alacritty does not launch in a virtual machine (known limitation;
+  not investigated or changed in code)
+- gitleaks: allow only anchored treesitter revision lines (AOS-SEC-13)
+
 * Sun Nov 15 2026 AvalonOS <avalonos@localhost> - 0.1.0-7
 - Console font ter-i32n (CP437 glyph order) instead of ter-v32n: box lines
   of the greeter and the first-boot TUI no longer turn into accented letters

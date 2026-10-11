@@ -14,7 +14,7 @@ import tempfile
 root = Path(sys.argv[1])
 # Execute the production heredoc verbatim, rather than a copied validator.
 source = (root / "scripts/check-iso-unowned.sh").read_text()
-marker = 'python3 - "$ISO" "$T/vd-offsets" <<\'PY\'\n'
+marker = 'python3 - "$ISO" "$T/vd-offsets" "$T/sa" "$p2s" <<\'PY\'\n'
 assert source.count(marker) == 1, "validator heredoc changed; update extraction"
 validator = source.split(marker, 1)[1].split('\nPY\n', 1)[0]
 # Reuse the actual --gaps exemption block without initializing the unrelated
@@ -68,12 +68,23 @@ with tempfile.TemporaryDirectory(prefix='avalonos-vd-') as tmp:
     tmp = Path(tmp)
     iso, offsets = tmp / 'synthetic.iso', tmp / 'vd-offsets'
 
-    def validate(data):
+    # Fedora-like xorriso 1.5.8 layout: partition offset 16, GPT p1 start 64,
+    # ESP at 4000 (512-byte sectors). Candidates: 16, 32, 64, 80.
+    FAKE_SA = (
+        "Partition offset   : 16\n"
+        "GPT start and size :   1  64  1000\n"
+        "GPT start and size :   2  4000  100\n"
+    )
+    sa_path = tmp / "sa"
+
+    def validate(data, sa=None, esp_start=4000):
         iso.write_bytes(data)
+        sa_path.write_text(FAKE_SA if sa is None else sa)
         offsets.unlink(missing_ok=True)
-        result = subprocess.run([sys.executable, '-c', validator, str(iso), str(offsets)],
-                                capture_output=True, text=True)
-        assert result.returncode == 0, result.stderr
+        result = subprocess.run(
+            [sys.executable, '-c', validator, str(iso), str(offsets), str(sa_path), str(esp_start)],
+            capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr or result.stdout
         return {int(x) for x in offsets.read_text().split()} if offsets.exists() else set()
 
     def allowed(*lbas):
@@ -120,6 +131,19 @@ with tempfile.TemporaryDirectory(prefix='avalonos-vd-') as tmp:
     bad[40:72] = b'OTHER_VOLUME'.ljust(32, b' ')
     check(validate(image(extra={64: bad, 65: descriptor(255)})) == allowed(16,17),
           'additional set with mismatched volume id rejected')
+    # P-L16: a valid same-volume set outside the layout-derived candidates
+    # is not exempted (this is the S1/appended-ISO case).
+    check(validate(image(extra={50: pvd(96), 51: descriptor(255)})) == allowed(16,17),
+          'valid same-volume set at non-candidate LBA 50 not exempted')
+    # With no system-area data, only the principal set at 16 is a candidate.
+    check(validate(image(extra=extra), sa="") == allowed(16,17),
+          'empty system-area report accepts only the principal set')
+    # P-L17 fixture: validator offset list includes 64 and 80 when the
+    # layout-derived candidates include those starts and the sets validate.
+    offs = validate(image(extra=extra))
+    check(offs == allowed(16,17,32,33,64,65,80,81)
+          and allowed(64,65,80,81).issubset(offs),
+          'P-L17 fixture: validated offsets include LBA 64 and 80')
 
     data = image()
     bare = 70*S + 123

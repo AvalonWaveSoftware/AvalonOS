@@ -3,7 +3,9 @@
 useDefault = true
 
 [allowlist]
-description = "Vendored nvim-treesitter parser git revisions and the public Fedora key fingerprint"
-paths = ['''overlay/usr/share/AvalonOS/nvim/pack/avalon/start/nvim-treesitter/lua/nvim-treesitter/parsers\.lua''']
-# Public OpenPGP fingerprint of the Fedora 44 key (upstream.env)
-regexes = ['''^36F612DCF27F7D1A48A835E4DBFCF71C6D9F90A6$''']
+description = "Treesitter parser git revisions (anchored revision lines only) and the public Fedora key fingerprint"
+# AOS-SEC-13: do not path-allowlist parsers.lua; only revision = '<40 hex>' lines.
+regexes = [
+  '''^36F612DCF27F7D1A48A835E4DBFCF71C6D9F90A6$''',
+  '''revision = '[0-9a-f]{40}',''',
+]

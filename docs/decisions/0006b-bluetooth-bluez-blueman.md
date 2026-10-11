@@ -30,3 +30,12 @@ ships with iwlwifi-mvm-firmware.
 ## Rollback
 
 Disable bluetooth.service; remove blueman/bluez.
+
+## Residual (AOS-SEC-09)
+
+`bluetooth.service` remains enabled by design of this decision, including
+the kickstart `services --enabled=` list and a `systemctl enable` of
+`bluetooth.service`. That is an accepted residual of the chosen Bluetooth
+support, not an oversight. Do not silently disable it in a later hardening
+pass without revisiting this decision. Rollback, if Master Chief chooses
+it, is still: disable `bluetooth.service` and remove blueman/bluez.

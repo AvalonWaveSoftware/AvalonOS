@@ -166,11 +166,15 @@ fi
 # area, directory records, slack, anything appended) get the full decoding
 # scan; the default path (and --full) also proves the ESP byte-identical to
 # upstream's + grub.cfg. --quick skips that ESP identity compare; the raw
-# ISO/ESP key scan still runs and will catch foreign key material in ESP
-# free space (P-L14: the default path also caught a gzip'd TEST key there).
+# ISO/ESP key scan still runs and may catch a gzip of the binary key in ESP
+# free space, but only the default path / --full ESP compare covers ESP free
+# space in general (P-I15: a gzip of the armored key passed --quick and
+# failed default/--full).
 unowned_up=(); if [ "$FULL" = 1 ] && [ -f "$UP" ]; then unowned_up=("$UP"); fi
 if "$ROOT/scripts/check-iso-unowned.sh" "$ISO" "${unowned_up[@]}" > "$T/unowned.log" 2>&1; then
     ok "unowned ISO bytes carry no other-kind key in any encoding$( [ "$FULL" = 1 ] && echo '; ESP == upstream ESP + grub.cfg (only FAT timestamps differ)')"
+    # QA-L1: keep the validator summary visible in build/CI logs on success.
+    grep -E '^(validated volume-descriptor sectors:|check-iso-unowned: ok)' "$T/unowned.log" || true
 else
     bad "unowned ISO bytes / ESP:"; sed 's/^/         /' "$T/unowned.log"
 fi

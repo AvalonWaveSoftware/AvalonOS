@@ -50,12 +50,12 @@ class Tests(unittest.TestCase):
                     return fh
                 with patch.object(mu, 'open', side_effect=marker_open, create=True), patch.object(mu, 'FLAG', flag), patch.object(mu, 'valid_name', return_value=None), patch.object(mu.subprocess, 'run', side_effect=run), patch.object(mu, '_finish_user', side_effect=finish), patch.object(mu.os, 'makedirs', side_effect=OSError if stage == 'marker' else None):
                     if stage == 'success':
-                        mu.create_user('alice', 'secret')
+                        mu.create_user('alice', 'secret12')
                         self.assertEqual(users, {'alice'})
                         self.assertTrue(Path(flag).exists())
                     else:
                         with self.assertRaises(OSError if stage == 'marker' else KeyboardInterrupt):
-                            mu.create_user('alice', 'secret')
+                            mu.create_user('alice', 'secret12')
                         self.assertFalse(users)
                         self.assertFalse(Path(flag).exists())
                         self.assertEqual(calls[-1], ['userdel', '-r', '--', 'alice'])
@@ -68,7 +68,7 @@ class Tests(unittest.TestCase):
             return subprocess.CompletedProcess(cmd, 9 if cmd[0] == 'useradd' else 0)
         with tempfile.TemporaryDirectory() as tmp, patch.object(mu, 'FLAG', str(Path(tmp) / 'ready')), patch.object(mu, 'valid_name', return_value=None), patch.object(mu.subprocess, 'run', side_effect=run):
             with self.assertRaises(ValueError):
-                mu.create_user('alice', 'secret')
+                mu.create_user('alice', 'secret12')
             self.assertFalse(any(c[0] == 'userdel' for c in calls))
             self.assertFalse((Path(tmp) / 'ready').exists())
 
@@ -87,7 +87,19 @@ class Tests(unittest.TestCase):
             path.write_text('quiet\n')
             self.assertFalse(ts.seed_requested(str(path)))
 
+    def test_password_policy(self):
+        with self.assertRaises(ValueError):
+            mu.create_user('alice', 'short')
+        with self.assertRaises(ValueError):
+            mu.create_user('aliceabc', 'aliceabc')
+        with self.assertRaises(ValueError):
+            mu.create_user('alice', '')
+        self.assertIsNone(mu.valid_password('alice', 'secret12'))
+        self.assertEqual(mu.valid_password('alice', 'short'), 'password must be at least 8 characters')
+        self.assertEqual(mu.valid_password('aliceabc', 'aliceabc'), 'password must not be the username')
+
     def test_signals_ignored_in_children(self):
+
         saved = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGQUIT, signal.SIGTSTP)}
         def child():
             # exec inherits SIG_IGN, including during useradd/chpasswd/dnf.
