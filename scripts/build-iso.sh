@@ -115,7 +115,8 @@ if ! xorriso -indev "$UP" -outdev "$OUT" \
     -commit_eject all > "$WORK/xorriso.log" 2>&1; then
     cat "$WORK/xorriso.log" >&2; die "xorriso failed"
 fi
-grep -E "SORRY|FAILURE|WARNING|image produced" "$WORK/xorriso.log" || true
+# Fedora's volume id (lowercase, dashes) triggers a harmless ISO 9660 naming warning.
+grep -E "SORRY|FAILURE|WARNING|image produced" "$WORK/xorriso.log" | grep -v "volid text does not comply" || true
 grep -qE "SORRY|FAILURE" "$WORK/xorriso.log" && die "xorriso reported errors (see $WORK/xorriso.log)"
 [ -s "$OUT" ] || die "xorriso did not produce $OUT"
 (cd "$OUTDIR" && sha256sum "$OUTPUT_ISO" > "$OUTPUT_ISO.sha256")
