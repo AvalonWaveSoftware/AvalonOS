@@ -8,7 +8,7 @@
 # Reconstructed in 2026-10 from ADR 0017; the original script was lost.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-user=admin; pw_env=; root_env=
+user="admin"; pw_env=""; root_env=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --user) user="$2"; shift 2;;

@@ -1,0 +1,9 @@
+# gitleaks config: default rules plus known false positives.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Vendored nvim-treesitter parser git revisions and the public Fedora key fingerprint"
+paths = ['''overlay/usr/share/AvalonOS/nvim/pack/avalon/start/nvim-treesitter/lua/nvim-treesitter/parsers\.lua''']
+# Public OpenPGP fingerprint of the Fedora 44 key (upstream.env)
+regexes = ['''^36F612DCF27F7D1A48A835E4DBFCF71C6D9F90A6$''']
