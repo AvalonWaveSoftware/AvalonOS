@@ -1,0 +1,46 @@
+#!/bin/sh
+# Launch Fedora's xwayland-satellite with a client-safe GPU env.
+#
+# niri's built-in xwayland-satellite spawn does not apply
+# environment { MESA_LOADER_DRIVER_OVERRIDE null } (R5-X1). On no-3D
+# (virtio-gpu 2D / avalonos.gpu=sw) the satellite and Xwayland would
+# inherit kms_swrast and can SIGSEGV the same way Wayland clients did.
+# This wrapper is set as niri's xwayland-satellite path: it always
+# unsets the override, and on the no-3D path sets LIBGL_ALWAYS_SOFTWARE=1
+# for this process only (and what it launches). niri itself keeps the
+# override via EnvironmentFile. Hardware GL / virgl: neither variable.
+#
+# gpu.env policy matches avalonos-alacritty (regular file, not a
+# symlink, size 1..65536, exact kms_swrast line). Production ignores
+# AVALONOS_* test hooks unless AVALONOS_TEST_HOOKS=1.
+
+set -e
+
+gpu_env=/run/avalonos/gpu.env
+sat_bin=/usr/bin/xwayland-satellite
+grep_bin=/usr/bin/grep
+
+if [ "${AVALONOS_TEST_HOOKS:-}" = 1 ]; then
+    [ -n "${AVALONOS_GPU_ENV:-}" ] && gpu_env=$AVALONOS_GPU_ENV
+    [ -n "${AVALONOS_XWAYLAND_SATELLITE:-}" ] && sat_bin=$AVALONOS_XWAYLAND_SATELLITE
+    [ -n "${AVALONOS_GREP:-}" ] && grep_bin=$AVALONOS_GREP
+fi
+
+unset MESA_LOADER_DRIVER_OVERRIDE
+unset LIBGL_ALWAYS_SOFTWARE
+
+software=0
+if [ -f "$gpu_env" ] && [ ! -L "$gpu_env" ]; then
+    sz=$(/usr/bin/stat -c %s "$gpu_env" 2>/dev/null || echo 0)
+    case "$sz" in
+        ''|*[!0-9]*) sz=0 ;;
+    esac
+    if [ "$sz" -gt 0 ] && [ "$sz" -le 65536 ] && "$grep_bin" -qx 'MESA_LOADER_DRIVER_OVERRIDE=kms_swrast' "$gpu_env"; then
+        software=1
+    fi
+fi
+if [ "$software" = 1 ]; then
+    export LIBGL_ALWAYS_SOFTWARE=1
+fi
+
+exec "$sat_bin" "$@"

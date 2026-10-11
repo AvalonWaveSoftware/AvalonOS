@@ -2,3 +2,7 @@
 enable avalonos-firstboot-user.service
 # AvalonOS: root-owned GPU probe for niri (kms_swrast only without 3D).
 enable avalonos-gpu-select.service
+# AvalonOS: add Flathub and install Obsidian when the network is up (does not block greetd).
+enable avalonos-flathub-obsidian.service
+# H-1: NM-libreswan does not start pluto; enable Fedora ipsec.service so IPsec works on a fresh install.
+enable ipsec.service

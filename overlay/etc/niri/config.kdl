@@ -66,12 +66,27 @@ environment {
     VISUAL "nvim"
     QT_QPA_PLATFORMTHEME "qt6ct"
     QT_STYLE_OVERRIDE "Breeze"
+    // niri itself may have MESA_LOADER_DRIVER_OVERRIDE=kms_swrast from
+    // niri.service EnvironmentFile=gpu.env (no-3D / avalonos.gpu=sw).
+    // That override crashes Wayland clients on Mesa 26.2.7 (virtio-gpu 2D).
+    // Unset it for every process niri spawns; leave it on niri only.
+    // niri's built-in xwayland-satellite spawn does not honor this
+    // block (R5-X1); see xwayland-satellite { path ... } below.
+    MESA_LOADER_DRIVER_OVERRIDE null
+}
+
+// R5-X1: niri starts xwayland-satellite on demand and does not apply
+// the environment { … null } block to that spawn. Route it through a
+// wrapper that unsets MESA_LOADER_DRIVER_OVERRIDE (and sets
+// LIBGL_ALWAYS_SOFTWARE=1 only on the no-3D path).
+xwayland-satellite {
+    path "/usr/bin/avalonos-xwayland-satellite"
 }
 
 binds {
     // i3-like (stock i3: j/k/l/; focus, Shift moves, Return term, Shift+q kill)
     Mod+Shift+Slash { show-hotkey-overlay; }
-    Mod+Return hotkey-overlay-title="Terminal" { spawn "alacritty"; }
+    Mod+Return hotkey-overlay-title="Terminal" { spawn "avalonos-alacritty"; }
     Mod+D hotkey-overlay-title="Launcher" { spawn "avalonos-launcher"; }
     Mod+Shift+Q { close-window; }
     Mod+Shift+C hotkey-overlay-title="Reload config" { spawn-sh "niri msg action load-config-file"; }
@@ -189,8 +204,8 @@ window-rule {
 window-rule {
     match app-id="^AvalonOS-net$"
     open-floating true
-    default-column-width { fixed 320; }
-    default-window-height { fixed 340; }
+    default-column-width { fixed 420; }
+    default-window-height { fixed 520; }
     default-floating-position x=12 y=8 relative-to="top-right"
 }
 

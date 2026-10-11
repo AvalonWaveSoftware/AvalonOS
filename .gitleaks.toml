@@ -2,10 +2,17 @@
 [extend]
 useDefault = true
 
-[allowlist]
+[[allowlists]]
 description = "Treesitter parser git revisions (anchored revision lines only) and the public Fedora key fingerprint"
 # AOS-SEC-13: do not path-allowlist parsers.lua; only revision = '<40 hex>' lines.
+# P-I18: match allowlist regexes against the line, not the secret value.
+regexTarget = "line"
+# P-L22: allow only the exact public fingerprint lines; extra text must be scanned.
+# [[allowlists]] is required on gitleaks 8.25+. (?m) is required so ^ and $
+# apply per line when regexTarget=line is evaluated against file content.
 regexes = [
-  '''^36F612DCF27F7D1A48A835E4DBFCF71C6D9F90A6$''',
-  '''revision = '[0-9a-f]{40}',''',
+  '''(?m)^FEDORA_KEY_FPR=36F612DCF27F7D1A48A835E4DBFCF71C6D9F90A6$''',
+  '''(?m)^\s*"RPM-GPG-KEY-fedora-44-x86_64:RPM-GPG-KEY-fedora-44-x86_64:36F612DCF27F7D1A48A835E4DBFCF71C6D9F90A6"$''',
+  '''(?m)^36F612DCF27F7D1A48A835E4DBFCF71C6D9F90A6  Fedora \(44\) <fedora-44-primary@fedoraproject\.org>          /etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-44-x86_64$''',
+  '''(?m)^\s*revision = '[0-9a-f]{40}',\s*$''',
 ]

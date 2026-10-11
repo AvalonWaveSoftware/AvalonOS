@@ -13,6 +13,11 @@ stage file.
 Repos: Fedora + updates, plus (a) RPM Fusion free/nonfree **only** for
 NVIDIA. No COPR. No vendor greeter.
 
+Exception (ADR 0021, 2026-11-22): the Fedora `flatpak` package ships
+in the image; on first boot when the network is up, Flathub is added
+and `md.obsidian.Obsidian` is installed. The ISO itself stays
+RPM-signed only and does not vendor Flathub content.
+
 ## Alternatives
 
 - Default weak deps: niri would pull fuzzel etc. we do not want.

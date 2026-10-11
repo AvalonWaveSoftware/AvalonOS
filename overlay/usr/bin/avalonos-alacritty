@@ -1,0 +1,90 @@
+#!/bin/sh
+# Launch Fedora's alacritty with a client-safe GPU env.
+#
+# niri (only) may use MESA_LOADER_DRIVER_OVERRIDE=kms_swrast via
+# niri.service EnvironmentFile=gpu.env. That override must never reach a
+# Wayland client: on Mesa 26.2.7 / virtio-gpu 2D it SIGSEGVs at
+# eglSwapBuffers (DRM_IOCTL_MODE_CREATE_DUMB EACCES). niri spawn would
+# otherwise pass niri's environment through, so this wrapper always
+# unsets the override. niri's config also unsets it for every spawn
+# (environment { MESA_LOADER_DRIVER_OVERRIDE null }).
+#
+# When gpu-select chose software (gpu.env contains the exact kms_swrast
+# line), this process gets LIBGL_ALWAYS_SOFTWARE=1 only — scoped to this
+# launch, not the session. Hardware GL / virgl / a missing file: no
+# LIBGL_ALWAYS_SOFTWARE, and a stale inherited override or LIBGL value
+# is cleared.
+#
+# gpu.env is root-owned; we ignore a symlink and cap the size. Other
+# gpu.env keys are not imported.
+#
+# Alacritty's stdout/stderr is sent to the journal (tag avalonos-alacritty)
+# when systemd-cat and journald are available. If they are not, the
+# terminal still starts (logging is best-effort). Both paths exec, so
+# the wrapper's PID becomes Alacritty's.
+#
+# Production ignores AVALONOS_* test hooks unless AVALONOS_TEST_HOOKS=1.
+# AVALONOS_JOURNAL_PROBE, if set under hooks, replaces the connect probe.
+
+set -e
+
+gpu_env=/run/avalonos/gpu.env
+alacritty_bin=/usr/bin/alacritty
+grep_bin=/usr/bin/grep
+cat_bin=/usr/bin/systemd-cat
+journal_stdout=/run/systemd/journal/stdout
+
+if [ "${AVALONOS_TEST_HOOKS:-}" = 1 ]; then
+    [ -n "${AVALONOS_GPU_ENV:-}" ] && gpu_env=$AVALONOS_GPU_ENV
+    [ -n "${AVALONOS_ALACRITTY:-}" ] && alacritty_bin=$AVALONOS_ALACRITTY
+    if [ "${AVALONOS_SYSTEMD_CAT+set}" = set ]; then
+        cat_bin=$AVALONOS_SYSTEMD_CAT
+    fi
+    [ -n "${AVALONOS_JOURNAL_STDOUT:-}" ] && journal_stdout=$AVALONOS_JOURNAL_STDOUT
+    [ -n "${AVALONOS_GREP:-}" ] && grep_bin=$AVALONOS_GREP
+fi
+
+# Clients never keep a loader override, including one inherited from niri.
+unset MESA_LOADER_DRIVER_OVERRIDE
+unset LIBGL_ALWAYS_SOFTWARE
+
+software=0
+if [ -f "$gpu_env" ] && [ ! -L "$gpu_env" ]; then
+    sz=$(/usr/bin/stat -c %s "$gpu_env" 2>/dev/null || echo 0)
+    case "$sz" in
+        ''|*[!0-9]*) sz=0 ;;
+    esac
+    if [ "$sz" -gt 0 ] && [ "$sz" -le 65536 ] && "$grep_bin" -qx 'MESA_LOADER_DRIVER_OVERRIDE=kms_swrast' "$gpu_env"; then
+        software=1
+    fi
+fi
+if [ "$software" = 1 ]; then
+    export LIBGL_ALWAYS_SOFTWARE=1
+fi
+
+# Best-effort journal. A leftover socket after journald stops still
+# passes [ -S ] but systemd-cat then fails with Connection refused and
+# the exec'd terminal never starts (R5-J1 / P-L26). Probe that the
+# socket accepts a connection; otherwise start Alacritty directly.
+journal_socket_live() {
+    sock=$1
+    [ -n "$sock" ] && [ -S "$sock" ] || return 1
+    if [ "${AVALONOS_TEST_HOOKS:-}" = 1 ] && [ -n "${AVALONOS_JOURNAL_PROBE:-}" ]; then
+        "$AVALONOS_JOURNAL_PROBE" "$sock"
+        return $?
+    fi
+    /usr/bin/python3 -c '
+import socket, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.settimeout(0.25)
+try:
+    s.connect(sys.argv[1])
+except Exception:
+    sys.exit(1)
+' "$sock"
+}
+
+if [ -n "$cat_bin" ] && journal_socket_live "$journal_stdout"; then
+    exec "$cat_bin" -t avalonos-alacritty -- "$alacritty_bin" "$@"
+fi
+exec "$alacritty_bin" "$@"

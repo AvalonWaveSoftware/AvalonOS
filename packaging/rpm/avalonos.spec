@@ -17,7 +17,7 @@
 
 Name:           avalonos
 Version:        0.1.0
-Release:        8%{?dist}
+Release:        9%{?dist}
 Summary:        Meta-package that installs the complete desktop
 License:        Apache-2.0
 URL:            https://github.com/AvalonWaveSoftware/AvalonOS
@@ -103,6 +103,8 @@ Requires:       python3
 Requires:       shadow-utils
 Requires:       util-linux
 Requires:       xdg-user-dirs
+Requires:       flatpak
+Requires:       iproute
 %{?systemd_requires}
 
 %description firstboot
@@ -112,6 +114,11 @@ user name and password and creates the user in the wheel group. root stays
 locked. No default credential ships and this package has no way to
 pre-seed a user.
 
+When the network is up, avalonos-flathub-obsidian.service adds the Flathub
+remote and installs md.obsidian.Obsidian. It does not run before greetd, so
+an offline first boot still reaches login; Obsidian is installed later when
+a network route is available. The ISO does not vendor Flathub content.
+
 %package desktop-tools
 Summary:        AvalonOS desktop helpers (rofi menus, network and hardware popups)
 License:        Apache-2.0
@@ -120,6 +127,8 @@ Requires:       python3
 Requires:       python3-gobject
 Requires:       gtk3
 Requires:       NetworkManager
+Requires:       NetworkManager-libreswan
+Requires:       libreswan
 Requires:       rofi
 Requires:       alacritty
 Requires:       btop
@@ -144,11 +153,15 @@ Summary:        AvalonOS network defaults (NetworkManager with iwd)
 License:        Apache-2.0
 Requires:       NetworkManager
 Requires:       NetworkManager-wifi
+Requires:       NetworkManager-libreswan
+Requires:       libreswan
 Requires:       iwd
 
 %description network
 Network defaults for AvalonOS: a NetworkManager configuration drop-in that
-makes NetworkManager use iwd as its Wi-Fi backend instead of wpa_supplicant.
+makes NetworkManager use iwd as its Wi-Fi backend instead of wpa_supplicant,
+and the signed Fedora IPsec VPN plugin (NetworkManager-libreswan, libreswan)
+used by the network menu.
 
 %package firefox
 Summary:        AvalonOS Firefox enterprise policies
@@ -295,12 +308,15 @@ fi
 
 %post firstboot
 %systemd_post avalonos-firstboot-user.service
+%systemd_post avalonos-flathub-obsidian.service
 
 %preun firstboot
 %systemd_preun avalonos-firstboot-user.service
+%systemd_preun avalonos-flathub-obsidian.service
 
 %postun firstboot
 %systemd_postun avalonos-firstboot-user.service
+%systemd_postun avalonos-flathub-obsidian.service
 
 %files
 %license LICENSE
@@ -355,12 +371,17 @@ fi
 %files firstboot
 %license LICENSE
 %{_bindir}/avalonos-make-user
+%dir %{_libexecdir}/avalonos
+%{_libexecdir}/avalonos/flathub-obsidian
 %{_unitdir}/avalonos-firstboot-user.service
+%{_unitdir}/avalonos-flathub-obsidian.service
 %{_presetdir}/80-avalonos.preset
 
 %files desktop-tools
 %license LICENSE
 %{_bindir}/avalonos-launcher
+%{_bindir}/avalonos-alacritty
+%{_bindir}/avalonos-xwayland-satellite
 %{_bindir}/avalonos-btop
 %{_datadir}/AvalonOS/hw-stats
 %{_datadir}/AvalonOS/net-menu
@@ -395,6 +416,16 @@ fi
 %config(noreplace) %{_sysconfdir}/skel/.config/qt6ct/
 %config(noreplace) %{_sysconfdir}/skel/.config/rofi/
 %{_datadir}/AvalonOS/xdg-data/
+
+%post network
+# H-1 / P-L29: NM-libreswan does not start pluto. Enable Fedora
+# ipsec.service on a fresh install via the preset (and kickstart
+# %post). %systemd_post only presets on first install, so an admin
+# systemctl disable survives upgrades and reboots. Do not ship a
+# tmpfiles wants link — it would recreate the enablement every boot.
+if [ -f %{_unitdir}/ipsec.service ]; then
+    %systemd_post ipsec.service
+fi
 
 %files network
 %license LICENSE
@@ -441,6 +472,65 @@ fi
 %endif
 
 %changelog
+* Sun Nov 22 2026 AvalonOS <avalonos@localhost> - 0.1.0-9
+- Post-0.1.0-8 batch: bluetooth.service disabled by default; bluez and
+  blueman stay installed (AOS-SEC-09)
+- Unowned-byte checker: GPT-start alias slots 64/80 exempted when they
+  match the corresponding offset view (64 vs 16, 80 vs 32), allowing
+  only PVD volume-space size (bytes 80-87) to differ (P-L16 / R9-B1).
+  Partition-offset views may differ and still validate (P-I21). S0
+  owned-extent payloads remain out of scope. xorriso calls are bounded
+  by timeout and a hang is FAIL (P-I23). U7 may skip only when the
+  xorriso version is successfully parsed and is older than 1.5.8
+  (P-I22)
+- net-menu: match Wi-Fi profiles by SSID via per-UUID queries that work
+  on nmcli 1.56.1 (QA-L2 / P-I20); always add a fresh profile on the
+  password path (P-L20) and forget iwd's stored PSK for that SSID before
+  activation (QA-L3); menu-created profile ownership is a UUID registry,
+  not a name prefix (P-I24); PSK validation, stale tempfile cleanup,
+  delete a profile created on failure (P-I19). Secrets still never on
+  argv; 0600 passwd-file on connection up under $XDG_RUNTIME_DIR
+- net-menu IPsec VPN (NetworkManager-libreswan): configure, connect and
+  disconnect for pre-shared key, certificate (NSS nickname) and IKEv2
+  EAP (username and password). Secrets use the same passwd-file path
+- First boot: Fedora flatpak RPM is on the ISO; when the network is up,
+  add Flathub and install md.obsidian.Obsidian without blocking greetd.
+  Offline installs get Obsidian later (ADR 0021)
+- Installer guard: no AVALONOS_INSTGUARD_ROOT hook; missing /proc/cmdline
+  fails closed (P-L18)
+- gitleaks allowlist regexTarget = line (P-I18); public Fedora
+  fingerprint allowlist is the exact fully anchored line forms only
+  (P-L22)
+- P-L9 accepted (no change); nvim-lsp/parsers stay 0.1.0-2 (P-I17)
+- Alacritty is started through avalonos-alacritty. When gpu-select
+  wrote MESA_LOADER_DRIVER_OVERRIDE=kms_swrast in /run/avalonos/gpu.env
+  (no-3D), the wrapper sets LIBGL_ALWAYS_SOFTWARE=1 for that Alacritty
+  process and what it launches, and never passes the Mesa loader override to the client
+  (QA 0.1.0-9 r4 B-1: kms_swrast SIGSEGVs Wayland clients on virtio-gpu
+  2D). The override stays on niri.service via EnvironmentFile; niri
+  config unsets it for spawned processes. Journal logging is
+  best-effort: if systemd-cat or journald is down, Alacritty still
+  starts (L-1 / P-L26). Hardware GL and virtio-gpu 3D (virgl) get
+  neither the override nor LIBGL_ALWAYS_SOFTWARE. Display-only
+  adapters still cannot start niri; use a virtio GPU (2D or 3D).
+  Live confirmation of the 2D / gpu=sw path is pending QA re-test
+- ipsec.service is enabled on a fresh install (preset, kickstart,
+  tmpfiles.d wants symlink, avalonos-network %post). NM-libreswan
+  does not start pluto (QA H-1)
+- net-menu: parse SSIDs with nmcli -e no (M-1); qualify iwd forget
+  by type and fail closed (M-2); certificate IPsec sets
+  leftid=%fromcert plus leftmodecfgclient=yes and narrowing=yes (M-3)
+
+- r6: IPsec road-warrior proposes leftsubnet=0.0.0.0/0 so TSi can
+  cover a pool VIP (R5-M3); certificate auth sets rightca=%same
+  (R5-V3a). narrowing=yes still allows the gateway to shrink
+  selectors (P-I38: no full-tunnel/kill-switch guarantee)
+- r6: Alacritty probes that the journal stdout socket accepts a
+  connection before exec'ing systemd-cat (R5-J1). niri starts
+  xwayland-satellite through avalonos-xwayland-satellite (R5-X1).
+  ipsec.service uses %systemd_post on first install; the tmpfiles
+  wants link is gone so an admin disable persists (P-L29)
+
 * Sat Nov 21 2026 AvalonOS <avalonos@localhost> - 0.1.0-8
 - Post-release Low batch on the 0.1.0-7 tree: ISO unowned-byte volume-descriptor
   exemption is layout-derived (P-L16); U7 requires a PVD at LBA 80 or SKIP (P-L17);

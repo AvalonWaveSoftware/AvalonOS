@@ -47,6 +47,9 @@ iwd
 NetworkManager
 NetworkManager-wifi
 NetworkManager-tui
+NetworkManager-libreswan
+libreswan
+flatpak
 bluez
 blueman
 polkit

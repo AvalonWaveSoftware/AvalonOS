@@ -34,7 +34,7 @@ Power: `BAT0`, `AC0`.
 
 - Wired: `enp59s0` (NetworkManager)
 - Wifi: Intel AX200 (`8086:2723`), firmware `iwlwifi-mvm-firmware`, backend **iwd**. Interface `wlan0` is up and can associate.
-- Bluetooth: AX200 combo; `bluez` + `blueman` (manager opened from the waybar network menu, not a tray applet)
+- Bluetooth: AX200 combo; `bluez` + `blueman` (manager opened from the waybar network menu, not a tray applet). `bluetooth.service` is disabled by default as of the post-0.1.0-8 batch (ADR 0006b); enable the unit if you want Bluetooth.
 
 ## Implications
 

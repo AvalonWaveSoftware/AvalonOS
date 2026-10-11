@@ -7,12 +7,12 @@ AvalonOS source repository for the daily user.
 |---|---|
 | `How-to-Install.md` | USB (BIOS + UEFI), first login, troubleshooting |
 | `README.md` | stack, keybinds, overlay, ISO |
-| `docs/decisions/` | ADRs (0020: repo rebuilt from the ISO) |
+| `docs/decisions/` | ADRs (0020: repo rebuilt from the ISO; 0021: first-boot Flathub/Obsidian exception to 0009) |
 | `docs/packages/` | dnf logs on the reference box |
 | `docs/hardware.md` | this laptop |
 | `docs/configs.md` | overlay file map |
 | `docs/iso.md` | netinst remaster, install-time signature checks, kickstart, QA test builds |
-| `docs/RELEASE-NOTES.md` | source notes for v0.1.0-8 (do not use to edit published v0.1.0-7 notes) |
+| `docs/RELEASE-NOTES.md` | source notes for v0.1.0-9 (do not use to edit published v0.1.0-7 or v0.1.0-8 notes) |
 | `kickstart/AvalonOS.ks` | kickstart **template** (placeholders, no credentials) |
 | `kickstart/packages.inc` | ISO package list |
 | `packaging/README.md` | golden tarball |

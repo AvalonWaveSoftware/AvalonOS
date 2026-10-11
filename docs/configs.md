@@ -58,7 +58,7 @@ adding or removing overlay files run `scripts/update-overlay-manifest.sh`.
 | `usr/share/AvalonOS/rofi-modes/` | per-category wrappers (`all`, `internet`, …) |
 | `usr/local/bin/avalonos-launcher` | Super+D; search + category tabs, programs on the right |
 | `usr/share/AvalonOS/hw-stats` | GTK hardware popup |
-| `usr/share/AvalonOS/net-menu` | network popup (Wi-Fi list, Bluetooth, connections) |
+| `usr/share/AvalonOS/net-menu` | network popup (Wi-Fi list, IPsec VPN, Bluetooth, connections) |
 | `usr/share/AvalonOS/net-status` | leftover status helper (not on the bar) |
 | `usr/local/share/applications/blueman-*.desktop` | hide Bluetooth Manager/Adapters from rofi |
 | `usr/local/bin/avalonos-btop` | themed btop in floating alacritty |

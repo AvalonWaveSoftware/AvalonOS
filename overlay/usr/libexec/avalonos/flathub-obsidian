@@ -1,0 +1,69 @@
+#!/bin/bash
+# Add the Flathub remote and install Obsidian on first boot when the
+# network is up. The ISO stays RPM-signed only; this does not vendor
+# Flathub content. A missing network must not fail the boot (the unit
+# is not ordered before greetd) and is retried later.
+set -euo pipefail
+
+STAMP=/var/lib/avalonos/obsidian-flatpak.done
+APP=md.obsidian.Obsidian
+REMOTE=flathub
+REMOTE_URL=https://dl.flathub.org/repo/flathub.flatpakrepo
+REMOTE_REPO=https://dl.flathub.org/repo/
+
+if [ -e "$STAMP" ]; then
+    exit 0
+fi
+
+if ! command -v flatpak >/dev/null 2>&1; then
+    echo "avalonos-flathub-obsidian: flatpak is not installed" >&2
+    exit 1
+fi
+
+# network-online.target may be active without a route; retry until one exists.
+if ! ip -4 route show default | grep -q . && ! ip -6 route show default | grep -q .; then
+    echo "avalonos-flathub-obsidian: no default route; will retry" >&2
+    exit 1
+fi
+
+assert_flathub_remote() {
+    # P-L25: --if-not-exists must not leave us on a hijacked "flathub" remote.
+    url=$(flatpak remotes --system --columns=name,url | awk -F'\t' '$1=="flathub"{print $2; exit}')
+    gpg=$(flatpak remotes --system --columns=name,options | awk -F'\t' '$1=="flathub"{print $2; exit}')
+    case "$url" in
+        "$REMOTE_REPO"|"${REMOTE_REPO%/}/") ;;
+        *)
+            echo "avalonos-flathub-obsidian: flathub remote URL is not $REMOTE_REPO (got ${url:-empty})" >&2
+            return 1
+            ;;
+    esac
+    case ",$gpg," in
+        *,no-gpg-verify,*|*,gpg-verify=false,*|*,gpg-verify=no,*)
+            echo "avalonos-flathub-obsidian: flathub remote does not have GPG verification on" >&2
+            return 1
+            ;;
+    esac
+}
+
+if flatpak info --system "$APP" >/dev/null 2>&1; then
+    assert_flathub_remote || exit 1
+    install -d -m 0755 /var/lib/avalonos
+    : > "$STAMP"
+    chmod 0644 "$STAMP"
+    exit 0
+fi
+
+flatpak remote-add --if-not-exists --system "$REMOTE" "$REMOTE_URL"
+assert_flathub_remote
+
+flatpak install -y --system --noninteractive "$REMOTE" "$APP"
+
+if commit=$(flatpak info --system -m "$APP" 2>/dev/null | awk -F': ' '/^commit:/{print $2; exit}'); then
+    if [ -n "$commit" ]; then
+        echo "avalonos-flathub-obsidian: installed $APP commit $commit"
+    fi
+fi
+
+install -d -m 0755 /var/lib/avalonos
+: > "$STAMP"
+chmod 0644 "$STAMP"

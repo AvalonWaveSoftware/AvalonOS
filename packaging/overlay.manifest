@@ -3025,3 +3025,5 @@ d	0755	1789225973	./usr/lib64
 d	0755	1789225973	./usr/lib64/firefox
 d	0755	1789225973	./usr/lib64/firefox/distribution
 f	0644	1788749848	./usr/lib64/firefox/distribution/policies.json
+f	0755	1795370906	./usr/bin/avalonos-alacritty
+f	0755	1795388457	./usr/bin/avalonos-xwayland-satellite

@@ -16,7 +16,7 @@ _runtime = os.environ.get("XDG_RUNTIME_DIR")
 if not _runtime:
     sys.exit("avalonos-hw-stats: XDG_RUNTIME_DIR is not set")
 PIDFILE = Path(_runtime) / "avalonos-hw.pid"
-BG, FG, NEON, ACCENT, IDLE = "#0A1628", "#D4FFD4", "#39FF14", "#C2185B", "#1A3A5C"
+BG, FG, NEON, ACCENT, IDLE = "#0A1628", "#D4FFD4", "#39FF14", "#C2185B", "#9EC4D8"
 
 CSS = f"""
 window {{ background: {BG}; }}

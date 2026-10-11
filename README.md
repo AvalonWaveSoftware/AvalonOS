@@ -1,7 +1,9 @@
 # AvalonOS
 
 Minimal custom desktop environment on **Fedora 44**. Official Fedora
-packages plus RPM Fusion **only** for NVIDIA. This repository is the
+packages plus RPM Fusion **only** for NVIDIA, with one first-boot
+exception: Flathub is added after install to install Obsidian
+(ADR 0021). The installer ISO stays RPM-signed only. This repository is the
 source for the AvalonOS netinst installer ISO. Documentation for the daily
 user is also copied to `~/AvalonOS-Docs` on installed machines.
 
@@ -19,8 +21,10 @@ hash is on the ISO.
 Wayland, **niri** 26, **xwayland-satellite**, **greetd** + **tuigreet**
 (wrapper `/usr/local/bin/avalonos-greeter`), **waybar**, **rofi** 2,
 **alacritty**, **neovim** (`vi` → nvim), **dunst**, PipeWire,
-NetworkManager + **iwd**, **bluez** + **blueman**, **Firefox**,
-**Dolphin**, **pavucontrol-qt**. Session Exec is
+NetworkManager + **iwd**, **NetworkManager-libreswan**, **bluez** +
+**blueman**, **Firefox**, **Dolphin**, **pavucontrol-qt**, **flatpak**
+(Obsidian from Flathub on first boot when the network is up; an offline
+install gets it later, ADR 0021). Session Exec is
 `/usr/local/bin/avalonos-session` (starts `niri.service`). niri does not
 pin a GPU or connector. NVIDIA (`akmod-nvidia`) is for PRIME offload,
 not the compositor.

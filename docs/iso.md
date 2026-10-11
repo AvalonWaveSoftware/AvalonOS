@@ -122,7 +122,17 @@ members of a structurally validated descriptor set (type, CD001, version 1,
 terminated, starting with a PVD) at a location derived from xorriso's
 `-report_system_area` (principal LBA 16, partition-offset copies, and the
 GPT-start views xorriso actually uses, including 64/80). A same-volume set
-elsewhere, including an appended embedded ISO, is not exempted (P-L16). A
+elsewhere, including an appended embedded ISO, is not exempted (P-L16).
+Partition-offset copies (LBA 16+offset, typically 32) may differ from the
+principal set and are still exempted when they validate (P-I21). Extra sets
+at GPT-start-as-2048-LBA alias slots (64/80) are compared with their
+corresponding offset view (64 with 16, 80 with 32): same set length, and
+byte-identical except the PVD volume-space-size field at bytes 80–87, whose
+little- and big-endian halves must agree and be less than or equal to the
+reference. That is what xorriso 1.5.8 writes (it copies 16→64 and 32→80).
+A planted set that differs anywhere else is not exempted. S0-style split
+payloads in owned file extents remain outside
+this scan. A
 `CD001` string anywhere else still fails (R7-B1). Mid-file squashfs, lz4 and erofs magics fail in whole files as well as in gaps; mid-file zlib streams are
 carved in `--gaps` (the whole gap, in 64 MiB windows; P-I16) and in files up to 64 MiB (P-L13). A real squashfs (gzip compression) holding an armored key is reported as `[zlib] foreign public-key material` rather than `squashfs data`, because the payload is reached by mid-file zlib carving; it still fails (QA-L2). Nesting that still
 has decodable structure, armor or carve magic when the depth limit (6) is
@@ -256,7 +266,14 @@ Everything else is the unmodified upstream file.
 - `avalonos-gpu-select.service` (root, each boot) writes
   `/run/avalonos/gpu.env`; niri gets `MESA_LOADER_DRIVER_OVERRIDE=kms_swrast`
   only when the GPU has no hardware GL. The 3D path (a GPU with a render
-  node) is unchanged.
+  node) is unchanged. That override is for niri only: niri's config
+  unsets `MESA_LOADER_DRIVER_OVERRIDE` for spawned processes, and
+  `avalonos-alacritty` also unsets it. On the no-3D path the wrapper
+  sets `LIBGL_ALWAYS_SOFTWARE=1` for that Alacritty process and what it launches (r4 QA
+  B-1: passing `kms_swrast` to clients SIGSEGVs on virtio-gpu 2D).
+  Journal logging is best-effort. This does not change the display-only
+  rule below. Live confirmation of virtio-gpu 2D / `avalonos.gpu=sw` is
+  pending QA re-test.
 - Display-only adapters (QA 2026-11-14 HIGH, QEMU `-vga std`): bochs-drm,
   cirrus, simpledrm, hyperv_drm and BMC VGA (ast, mgag200) have a KMS card but
   no render node. Mesa's EGL lists only render-capable DRM devices (a
@@ -276,7 +293,7 @@ Everything else is the unmodified upstream file.
 
 ## Known limitations
 
-- **Alacritty in a virtual machine** (Master Chief, 2026-11-21 2:39pm CT): Alacritty does not launch in a virtual machine. This is a documented known limitation; it has not been investigated or changed in code.
+- **Alacritty:** Super+Return and the other Alacritty launch paths run `avalonos-alacritty`. On the no-3D path the wrapper sets `LIBGL_ALWAYS_SOFTWARE=1` for that Alacritty process and what it launches and never passes `MESA_LOADER_DRIVER_OVERRIDE=kms_swrast` to the client (that override is for niri only). Hardware GL and virtio-gpu 3D (virgl) get neither. Journal logging is best-effort; if systemd-cat or journald is down (including a leftover journal socket), Alacritty still starts. X11 clients go through `avalonos-xwayland-satellite` with the same client GPU policy. Live confirmation of virtio-gpu 2D / `avalonos.gpu=sw` is pending QA re-test. This does not start a desktop on a display-only adapter (QEMU `-vga std` / QXL, no render node); use a virtio GPU (2D or 3D).
 - Display-only adapters and NVIDIA Secure Boot are described under Installer behaviour above, and in How-to-Install.md.
 
 ## Test builds (QA only)

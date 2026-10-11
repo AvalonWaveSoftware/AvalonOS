@@ -1,12 +1,14 @@
 #!/usr/bin/python3
-"""AvalonOS network dropdown — actions plus a Wi-Fi picker."""
+"""AvalonOS network dropdown — Wi-Fi picker and IPsec VPN."""
 import os
+import re
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
 import threading
+import uuid
 from pathlib import Path
 
 import gi
@@ -16,10 +18,26 @@ gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GLib, Gtk, Pango  # noqa: E402
 
 APP_ID = "AvalonOS-net"
-_runtime = os.environ.get("XDG_RUNTIME_DIR")
-if not _runtime:
-    sys.exit("avalonos-net-menu: XDG_RUNTIME_DIR is not set")
-PIDFILE = Path(_runtime) / "avalonos-net.pid"
+def runtime_dir():
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime:
+        sys.exit("avalonos-net-menu: XDG_RUNTIME_DIR is not set")
+    return Path(runtime)
+
+
+def _clear_stale_nm_tempfiles() -> None:
+    # P-I19: drop leftovers from a previous SIGKILL; only our passwd-file prefix.
+    try:
+        for leftover in runtime_dir().glob("avalonos-nm-*"):
+            if leftover.is_file():
+                try:
+                    leftover.unlink()
+                except OSError:
+                    pass
+    except OSError:
+        pass
+
+
 BG, FG, NEON, ACCENT, ALT, IDLE = (
     "#0A1628",
     "#D4FFD4",
@@ -60,11 +78,13 @@ entry {{
 scrolledwindow {{ background: {BG}; }}
 """
 
-HOME_SIZE = (320, 340)
+HOME_SIZE = (320, 380)
 WIFI_SIZE = (320, 420)
+VPN_SIZE = (420, 520)
 
 
 def already_running() -> bool:
+    PIDFILE = runtime_dir() / "avalonos-net.pid"
     if not PIDFILE.exists():
         return False
     try:
@@ -150,6 +170,298 @@ def saved_wifi() -> set[str]:
     return names
 
 
+def wifi_profile_ssid(uuid_value: str) -> str:
+    # QA-L2: Fedora 44 nmcli 1.56.1 rejects a setting field in list mode
+    # (`-f …,802-11-wireless.ssid connection show`, rc=2). Query the SSID
+    # of one profile with `-g` instead.
+    # M-1 / P-I30: nmcli -g escapes ":" and "\\" unless -e no is set.
+    return run(
+        "nmcli", "-e", "no", "-g", "802-11-wireless.ssid",
+        "connection", "show", "uuid", uuid_value, capture=True,
+    )
+
+
+def wifi_uuids_for_ssid(ssid: str) -> list[str]:
+    # P-L20 / QA-L2: match profiles by the Wi-Fi SSID, not by connection name.
+    # List UUID,TYPE only, then read each Wi-Fi profile's SSID per UUID.
+    out = run(
+        "nmcli", "-t", "-f", "UUID,TYPE", "connection", "show", capture=True,
+    )
+    uuids: list[str] = []
+    for line in out.splitlines():
+        parts = nmcli_fields(line)
+        if len(parts) >= 2 and parts[1] == "802-11-wireless":
+            if wifi_profile_ssid(parts[0]) == ssid:
+                uuids.append(parts[0])
+    return uuids
+
+
+def _state_dir() -> Path | None:
+    root = os.environ.get("XDG_STATE_HOME")
+    if root:
+        return Path(root) / "avalonos"
+    home = os.environ.get("HOME")
+    if home:
+        return Path(home) / ".local/state/avalonos"
+    return None
+
+
+def _registry_path() -> Path | None:
+    d = _state_dir()
+    return None if d is None else d / "net-menu.uuids"
+
+
+_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+
+def _valid_uuid(value: str) -> bool:
+    return bool(value) and bool(_UUID_RE.fullmatch(value))
+
+
+def _read_registry_lines(path: Path) -> set[str]:
+    # P-I25: do not follow a symlink; tolerate invalid UTF-8; keep only UUIDs.
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        return set()
+    try:
+        data = os.read(fd, 1 << 20)
+    finally:
+        os.close(fd)
+    text = data.decode("utf-8", errors="replace")
+    return {ln.strip() for ln in text.splitlines() if _valid_uuid(ln.strip())}
+
+
+def _write_registry(path: Path, uuids: set[str]) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if path.is_symlink():
+        return
+    clean = sorted(u for u in uuids if _valid_uuid(u))
+    if not clean:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        return
+    fd, tmp = tempfile.mkstemp(prefix="net-menu.uuids.", dir=str(path.parent), text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write("".join(u + "\n" for u in clean))
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def remember_menu_profile(uuid_value: str) -> None:
+    # P-I24: ownership is the UUIDs this menu created, not a name prefix.
+    path = _registry_path()
+    if path is None or not _valid_uuid(uuid_value):
+        return
+    try:
+        existing = _read_registry_lines(path) if path.exists() and not path.is_symlink() else set()
+        existing.add(uuid_value)
+        _write_registry(path, existing)
+    except OSError:
+        pass
+
+
+def menu_profile_uuids() -> set[str]:
+    path = _registry_path()
+    if path is None or not path.exists():
+        return set()
+    try:
+        return _read_registry_lines(path)
+    except OSError:
+        return set()
+
+
+def forget_menu_profile(uuid_value: str) -> None:
+    path = _registry_path()
+    if path is None or not uuid_value:
+        return
+    try:
+        existing = menu_profile_uuids()
+        existing.discard(uuid_value)
+        _write_registry(path, existing)
+    except OSError:
+        pass
+
+
+def iwd_ssid_config_stem(ssid: str) -> str:
+    # iwd.network(5): verbatim if only alnum, space, underscore or minus;
+    # otherwise "=" + lowercase hex of the UTF-8 SSID.
+    if ssid and all(ch.isalnum() or ch in " _-" for ch in ssid):
+        return ssid
+    return "=" + ssid.encode("utf-8").hex()
+
+
+# iwd stores one file per (SSID, security type). A bare `iwctl
+# known-networks <ssid> forget` is ambiguous when both .psk and .open
+# (or .8021x) exist (M-2 / W4).
+IWD_KNOWN_TYPES = ("psk", "open", "8021x")
+
+
+_IWD_LIST_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def iwd_service_is_active() -> bool:
+    # P-L31: a zero exit from `iwctl known-networks list` is not proof
+    # that iwd is up. Require systemctl to report the unit active.
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-active", "iwd"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0 and (result.stdout or "").strip() == "active"
+
+
+def split_iwd_qualified_name(name: str) -> tuple[str, str] | None:
+    for typ in IWD_KNOWN_TYPES:
+        suffix = "." + typ
+        if name.endswith(suffix) and len(name) > len(suffix):
+            return name[: -len(suffix)], typ
+    return None
+
+
+def known_network_in_iwctl_list(text: str, name: str) -> bool:
+    # Parse `iwctl known-networks list` output (optional ANSI). The
+    # qualified name is ssid.psk / ssid.open / ssid.8021x. A substring
+    # hit on a longer SSID does not count.
+    parts = split_iwd_qualified_name(name)
+    if not parts:
+        return False
+    ssid, typ = parts
+    body = _IWD_LIST_ANSI.sub("", text or "")
+    for raw in body.splitlines():
+        line = raw.strip()
+        if not line or set(line) <= set("-="):
+            continue
+        lowered = line.lower()
+        if lowered.startswith("known networks") or (
+            lowered.startswith("name") and "security" in lowered
+        ):
+            continue
+        tokens = line.split()
+        if ssid in tokens and typ in tokens:
+            return True
+        if line.startswith(ssid + " ") and typ in tokens:
+            return True
+    return False
+
+
+def forget_iwd_known_network(ssid: str) -> bool:
+    # QA-L3 / M-2: forget every known type for this SSID via iwctl
+    # (session D-Bus). Never put a PSK on argv; do not write under
+    # /var/lib/iwd. Returns True if every attempt succeeded or the
+    # network was already unknown. False on denial, timeout, or an
+    # ambiguous/other error — callers must fail closed.
+    #
+    # P-M30: a single leading `--` stops iwctl's getopt_long ("u:p:P:dh")
+    # so a name starting with -h is not treated as help. Do not pass a
+    # second `--` after known-networks: iwctl binds that as the entity
+    # and the forget never runs. Form: iwctl -- known-networks NAME forget.
+    # P-L31: a not-found result is clean only if iwd is active and the
+    # parsed list lacks that network.
+    if not ssid:
+        return False
+    def not_found(result):
+        text = (result.stderr or result.stdout or "").lower()
+        return result.returncode != 0 and any(
+            phrase in text for phrase in ("no network", "not found", "does not exist")
+        )
+
+    ok = True
+    try:
+        for typ in IWD_KNOWN_TYPES:
+            name = f"{ssid}.{typ}"
+            command = ["iwctl", "--", "known-networks", name, "forget"]
+            result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+            if result.returncode == 0:
+                # A zero exit can also be help output; verify the key is gone.
+                result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+            if not_found(result):
+                if iwd_service_is_active():
+                    probe = subprocess.run(
+                        ["iwctl", "--", "known-networks", "list"],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                    listed = known_network_in_iwctl_list(
+                        (probe.stdout or "") + "\n" + (probe.stderr or ""),
+                        name,
+                    )
+                    if probe.returncode == 0 and not listed:
+                        continue
+            print(
+                "avalonos-net-menu: could not clear saved Wi-Fi credentials for this network",
+                file=sys.stderr,
+            )
+            ok = False
+    except (OSError, subprocess.TimeoutExpired):
+        print(
+            "avalonos-net-menu: could not clear saved Wi-Fi credentials for this network",
+            file=sys.stderr,
+        )
+        return False
+    return ok
+
+
+def delete_connection(uuid_value: str) -> None:
+    try:
+        result = subprocess.run(
+            ["nmcli", "connection", "delete", "uuid", uuid_value],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0:
+            print("avalonos-net-menu: connection delete failed", file=sys.stderr)
+        else:
+            forget_menu_profile(uuid_value)
+    except (OSError, subprocess.TimeoutExpired):
+        print("avalonos-net-menu: connection delete failed", file=sys.stderr)
+
+
+def delete_older_menu_profiles(ssid: str, active_uuid: str) -> None:
+    # P-I24: delete only profiles this menu recorded, for this SSID, never
+    # the active UUID and never a user profile whose name merely starts
+    # with avalonos-.
+    owned = menu_profile_uuids()
+    for uuid_value in wifi_uuids_for_ssid(ssid):
+        if uuid_value != active_uuid and uuid_value in owned:
+            delete_connection(uuid_value)
+
+def psk_acceptable(password: str) -> bool:
+    # P-I19: reject CR/LF/NUL; allow 8-63 ASCII printable or 64 hex.
+    if any(ch in password for ch in ("\r", "\n", chr(0))):
+        return False
+    if len(password) == 64 and all(ch in "0123456789abcdefABCDEF" for ch in password):
+        return True
+    if 8 <= len(password) <= 63 and all(0x20 <= ord(ch) <= 0x7E for ch in password):
+        return True
+    return False
+
+
+def _added_uuid(text: str) -> str | None:
+    # nmcli: Connection 'name' (uuid) successfully added.
+    if not text:
+        return None
+    for part in text.replace(")", "(").split("("):
+        token = part.strip()
+        if len(token) == 36 and token.count("-") == 4:
+            return token
+    return None
+
+
 def is_open(security: str) -> bool:
     return security.strip() in ("", "--", "none", "None")
 
@@ -196,11 +508,13 @@ def list_aps() -> list[dict]:
 
 
 def connect_wifi(ssid: str, password: str | None = None) -> tuple[bool, str]:
-    saved = saved_wifi()
+    if password is not None and not psk_acceptable(password):
+        return False, "invalid password"
+
     if password is None:
-        if ssid in saved:
+        for saved_uuid in wifi_uuids_for_ssid(ssid):
             r = subprocess.run(
-                ["nmcli", "-w", "25", "connection", "up", "id", ssid],
+                ["nmcli", "-w", "25", "connection", "up", "uuid", saved_uuid],
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -222,38 +536,61 @@ def connect_wifi(ssid: str, password: str | None = None) -> tuple[bool, str]:
     # "connection up", not on "device wifi connect" (R8-B1). Never put the
     # PSK on argv. Open the cleanup try/finally immediately after mkstemp
     # (P-L19) so a write/close/chmod error still removes the 0600 tempfile.
+    #
+    # P-L20: always add a fresh profile (check the add return code) and
+    # activate it by UUID. Do not "connection up" an existing profile that
+    # may already hold a stored PSK — a wrong passwd-file would still
+    # activate in that case (QA 0.1.0-8 item 5d). Also forget iwd's
+    # stored PSK for this SSID before activation (QA-L3).
+    # P-I19: delete the profile we created if activation fails.
+    # wifi-sec.key-mgmt stays wpa-psk (WPA3-only/SAE, enterprise and WEP
+    # are not offered from the menu).
     runtime = os.environ.get("XDG_RUNTIME_DIR")
     if not runtime:
         return False, "XDG_RUNTIME_DIR is not set"
-    fd, passwd_path = tempfile.mkstemp(prefix="avalonos-nm-", dir=runtime, text=True)
     fd_open = True
+    created_uuid = None
+    r = None
+    fd, passwd_path = tempfile.mkstemp(prefix="avalonos-nm-", dir=runtime, text=True)
     try:
+        created_name = f"avalonos-{os.getpid()}-{os.urandom(4).hex()}"
         os.write(fd, f"802-11-wireless-security.psk:{password}\n".encode())
         os.close(fd)
         fd_open = False
         os.chmod(passwd_path, 0o600)
-        if ssid not in saved:
-            # If the profile already exists, still try connection up below.
-            subprocess.run(
-                [
-                    "nmcli",
-                    "connection",
-                    "add",
-                    "type",
-                    "wifi",
-                    "ifname",
-                    "*",
-                    "con-name",
-                    ssid,
-                    "ssid",
-                    ssid,
-                    "wifi-sec.key-mgmt",
-                    "wpa-psk",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
+        created_uuid = str(uuid.uuid4())
+        add = subprocess.run(
+            [
+                "nmcli",
+                "connection",
+                "add",
+                "type",
+                "wifi",
+                "ifname",
+                "*",
+                "con-name",
+                created_name,
+                "connection.uuid",
+                created_uuid,
+                "ssid",
+                ssid,
+                "wifi-sec.key-mgmt",
+                "wpa-psk",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if add.returncode != 0:
+            return False, (add.stderr or add.stdout or "could not create connection").strip() or "could not create connection"
+        remember_menu_profile(created_uuid)
+        # QA-L3 / M-2: drop iwd's stored credentials for this SSID so a
+        # wrong passwd-file cannot authenticate with a previously saved
+        # passphrase. Fail closed if forget did not succeed.
+        if not forget_iwd_known_network(ssid):
+            delete_connection(created_uuid)
+            created_uuid = None
+            return False, "could not clear saved Wi-Fi credentials for this network"
         r = subprocess.run(
             [
                 "nmcli",
@@ -261,8 +598,8 @@ def connect_wifi(ssid: str, password: str | None = None) -> tuple[bool, str]:
                 "25",
                 "connection",
                 "up",
-                "id",
-                ssid,
+                "uuid",
+                created_uuid,
                 "passwd-file",
                 passwd_path,
             ],
@@ -280,8 +617,14 @@ def connect_wifi(ssid: str, password: str | None = None) -> tuple[bool, str]:
             os.unlink(passwd_path)
         except OSError:
             pass
+        # Timeout or other exception after add: still drop the profile we created.
+        if created_uuid and (r is None or r.returncode != 0):
+            delete_connection(created_uuid)
+    if r is None:
+        return False, "could not connect"
     err = (r.stderr or r.stdout or "").strip()
     if r.returncode == 0:
+        delete_older_menu_profiles(ssid, created_uuid)
         return True, ""
     return False, err or "could not connect"
 
@@ -298,6 +641,336 @@ def needs_secrets(err: str) -> bool:
             "authentication",
         )
     )
+
+
+
+LIBRESWAN_SERVICE = "org.freedesktop.NetworkManager.libreswan"
+# QA H-1: Fedora libreswan implements EAP-TLS only, not EAP-MSCHAPv2.
+# The username/password option stays in the menu but is labeled and
+# refused as unsupported. Certificate auth (the EAP-TLS path) is unchanged.
+EAP_USERNAME_PASSWORD_UNSUPPORTED = "EAP username/password (unsupported)"
+
+
+def _vpn_data_ok(value: str) -> bool:
+    # Values land in vpn.data as comma-separated key=value. P-I29: reject
+    # all C0 controls, DEL, separators, backslash and quotes.
+    if not value:
+        return False
+    for c in value:
+        o = ord(c)
+        if o < 0x20 or o == 0x7F or c in ",=\\'\"":
+            return False
+    return True
+
+
+def _vpn_gateway_ok(value: str) -> bool:
+    return _vpn_data_ok(value) and all(c.isalnum() or c in "._-:[]" for c in value)
+
+
+def vpn_psk_strength_warning(psk: str) -> str:
+    # P-I26: the gateway dictates the PSK; warn, do not reject, when short.
+    if psk and len(psk) < 20:
+        return "pre-shared key is under 20 characters"
+    return ""
+
+
+def _vpn_secret_ok(value: str) -> bool:
+    return bool(value) and all(c not in value for c in "\n\r\x00")
+
+
+def parse_vpn_data(raw: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if not raw:
+        return out
+    for part in raw.split(","):
+        if "=" not in part:
+            continue
+        key, _, val = part.partition("=")
+        key, val = key.strip(), val.strip()
+        if key:
+            out[key] = val
+    return out
+
+
+def vpn_auth_kind(data: dict[str, str]) -> str:
+    if data.get("leftcert"):
+        return "certificate"
+    if data.get("leftusername") or data.get("leftxauthusername"):
+        return "eap"
+    return "psk"
+
+
+def list_libreswan_profiles() -> list[dict]:
+    out = run("nmcli", "-t", "-f", "UUID,TYPE,NAME", "connection", "show", capture=True) or ""
+    rows: list[dict] = []
+    for line in out.splitlines():
+        parts = nmcli_fields(line)
+        if len(parts) < 3:
+            continue
+        uuid_value, typ, name = parts[0], parts[1], parts[2]
+        if typ != "vpn":
+            continue
+        svc = (
+            run(
+                "nmcli",
+                "-e",
+                "no",
+                "-g",
+                "vpn.service-type",
+                "connection",
+                "show",
+                "uuid",
+                uuid_value,
+                capture=True,
+            )
+            or ""
+        )
+        if svc.strip() != LIBRESWAN_SERVICE:
+            continue
+        data_raw = (
+            run(
+                "nmcli",
+                "-e",
+                "no",
+                "-g",
+                "vpn.data",
+                "connection",
+                "show",
+                "uuid",
+                uuid_value,
+                capture=True,
+            )
+            or ""
+        )
+        data = parse_vpn_data(data_raw)
+        rows.append(
+            {
+                "uuid": uuid_value,
+                "name": name,
+                "data": data,
+                "kind": vpn_auth_kind(data),
+            }
+        )
+    return rows
+
+
+def active_vpn_uuids() -> set[str]:
+    out = (
+        run(
+            "nmcli",
+            "-t",
+            "-f",
+            "UUID,TYPE",
+            "connection",
+            "show",
+            "--active",
+            capture=True,
+        )
+        or ""
+    )
+    found: set[str] = set()
+    for line in out.splitlines():
+        parts = nmcli_fields(line)
+        if len(parts) >= 2 and parts[1] == "vpn":
+            found.add(parts[0])
+    return found
+
+
+def add_libreswan_connection(
+    name: str,
+    gateway: str,
+    kind: str,
+    *,
+    username: str = "",
+    cert: str = "",
+) -> tuple[str | None, str]:
+    if kind == "eap":
+        return None, EAP_USERNAME_PASSWORD_UNSUPPORTED
+    if not _vpn_data_ok(name) or not _vpn_gateway_ok(gateway):
+        return None, "invalid name or gateway"
+    if kind not in ("psk", "certificate"):
+        return None, "unsupported authentication type"
+    # IPsec road-warrior (R5-M3): when leftsubnet is omitted, libreswan
+    # defaults TSi to left (the physical host address, e.g. 10.0.2.15/32).
+    # A pool gateway assigns a VIP via IKEv2 CP but then rejects that TSi
+    # with TS_UNACCEPTABLE. leftmodecfgclient=yes + narrowing=yes is not
+    # enough by itself. Propose leftsubnet=0.0.0.0/0 so TSi covers the
+    # assigned VIP; the gateway may narrow it (P-I38: no full-tunnel /
+    # kill-switch guarantee). ikev2=insist stays; leftid is only set for
+    # certificate auth (IKEv1 + leftid would force aggressive mode).
+    # R5-V3a: rightca=%same on certificate auth so the client sends
+    # CERTREQ (needed when the responder uses send_cert=ifasked).
+    parts = [
+        f"right={gateway}",
+        "ikev2=insist",
+        "leftmodecfgclient=yes",
+        "narrowing=yes",
+        "leftsubnet=0.0.0.0/0",
+    ]
+    if kind == "psk":
+        parts += ["authby=secret", "pskvalue-flags=2"]
+    elif kind == "certificate":
+        if not _vpn_data_ok(cert):
+            return None, "invalid certificate nickname"
+        parts += [f"leftcert={cert}", "leftid=%fromcert", "rightca=%same"]
+    else:
+        if not _vpn_data_ok(username):
+            return None, "invalid username"
+        parts += [
+            f"leftusername={username}",
+            f"leftxauthusername={username}",
+            "xauthpassword-flags=2",
+        ]
+    created_uuid = str(uuid.uuid4())
+    add = subprocess.run(
+        [
+            "nmcli",
+            "connection",
+            "add",
+            "type",
+            "vpn",
+            "vpn-type",
+            "libreswan",
+            "con-name",
+            name,
+            "connection.uuid",
+            created_uuid,
+            "vpn.data",
+            ",".join(parts),
+            "connection.autoconnect",
+            "no",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if add.returncode != 0:
+        return None, (add.stderr or add.stdout or "could not create connection").strip() or "could not create connection"
+    remember_menu_profile(created_uuid)
+    return created_uuid, ""
+
+
+def _nmcli_up_passwd_file(uuid_value: str, secret_lines: list[str]) -> tuple[bool, str]:
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime:
+        return False, "XDG_RUNTIME_DIR is not set"
+    fd_open = True
+    r = None
+    fd, passwd_path = tempfile.mkstemp(prefix="avalonos-nm-", dir=runtime, text=True)
+    try:
+        payload = "".join(
+            line if line.endswith("\n") else line + "\n" for line in secret_lines
+        )
+        os.write(fd, payload.encode())
+        os.close(fd)
+        fd_open = False
+        os.chmod(passwd_path, 0o600)
+        r = subprocess.run(
+            [
+                "nmcli",
+                "-w",
+                "25",
+                "connection",
+                "up",
+                "uuid",
+                uuid_value,
+                "passwd-file",
+                passwd_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    finally:
+        if fd_open:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        try:
+            os.unlink(passwd_path)
+        except OSError:
+            pass
+    if r is None:
+        return False, "could not connect"
+    err = (r.stderr or r.stdout or "").strip()
+    if r.returncode == 0:
+        return True, ""
+    return False, err or "could not connect"
+
+
+def connect_libreswan(
+    uuid_value: str,
+    *,
+    psk: str | None = None,
+    password: str | None = None,
+) -> tuple[bool, str]:
+    if psk is not None:
+        if not _vpn_secret_ok(psk):
+            return False, "invalid secret"
+        return _nmcli_up_passwd_file(uuid_value, [f"vpn.secrets.pskvalue:{psk}"])
+    if password is not None:
+        # Existing EAP username/password profiles cannot be brought up
+        # (same unsupported method; do not prompt or place a secret).
+        return False, EAP_USERNAME_PASSWORD_UNSUPPORTED
+    r = subprocess.run(
+        ["nmcli", "-w", "25", "connection", "up", "uuid", uuid_value],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    err = (r.stderr or r.stdout or "").strip()
+    if r.returncode == 0:
+        return True, ""
+    return False, err or "could not connect"
+
+
+def disconnect_libreswan(uuid_value: str) -> tuple[bool, str]:
+    r = subprocess.run(
+        ["nmcli", "connection", "down", "uuid", uuid_value],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if r.returncode == 0:
+        return True, ""
+    return False, (r.stderr or r.stdout or "could not disconnect").strip() or "could not disconnect"
+
+
+def configure_and_connect_libreswan(
+    name: str,
+    gateway: str,
+    kind: str,
+    *,
+    username: str = "",
+    cert: str = "",
+    psk: str | None = None,
+    password: str | None = None,
+) -> tuple[bool, str]:
+    if kind == "eap":
+        return False, EAP_USERNAME_PASSWORD_UNSUPPORTED
+    if kind == "psk":
+        if psk is None or not _vpn_secret_ok(psk):
+            return False, "invalid secret"
+    created_uuid, err = add_libreswan_connection(
+        name, gateway, kind, username=username, cert=cert
+    )
+    if not created_uuid:
+        return False, err
+    try:
+        if kind == "psk":
+            ok, msg = connect_libreswan(created_uuid, psk=psk)
+        elif kind == "eap":
+            ok, msg = connect_libreswan(created_uuid, password=password)
+        else:
+            ok, msg = connect_libreswan(created_uuid)
+    except Exception:
+        delete_connection(created_uuid)
+        raise
+    if not ok:
+        delete_connection(created_uuid)
+        return False, msg
+    return True, ""
 
 
 def in_thread(work, done):
@@ -317,9 +990,13 @@ class NetWin(Gtk.Window):
         super().__init__(title="AvalonOS network")
         self.set_default_size(*HOME_SIZE)
         self.set_decorated(False)
+        self.set_resizable(True)
         self.set_keep_above(True)
         self._busy = False
         self._pass_ssid = ""
+        self._pass_mode = "wifi"
+        self._pass_vpn_uuid = ""
+        self._vpn_selected = None
 
         self.stack = Gtk.Stack()
         self.stack.set_transition_type(Gtk.StackTransitionType.NONE)
@@ -327,6 +1004,8 @@ class NetWin(Gtk.Window):
         self.stack.add_named(self._home_page(), "home")
         self.stack.add_named(self._wifi_page(), "wifi")
         self.stack.add_named(self._pass_page(), "pass")
+        self.stack.add_named(self._vpn_page(), "vpn")
+        self.stack.add_named(self._vpn_cfg_page(), "vpncfg")
         self.connect("key-press-event", self.on_key)
 
     def _home_page(self):
@@ -343,6 +1022,7 @@ class NetWin(Gtk.Window):
             ("Edit connections", self.edit),
             ("Bluetooth", self.bluetooth),
             ("Wifi", self.open_wifi),
+            ("VPN", self.open_vpn),
             ("Copy IPv4", self.copy_ip),
             ("nmtui", self.nmtui),
             ("Disconnect", self.disconnect),
@@ -392,7 +1072,7 @@ class NetWin(Gtk.Window):
         box.set_margin_end(12)
         head = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         back = Gtk.Button(label="←")
-        back.connect("clicked", lambda *_: self.stack.set_visible_child_name("wifi"))
+        back.connect("clicked", lambda *_: self._pass_back())
         self.pass_title = Gtk.Label(label="password")
         self.pass_title.get_style_context().add_class("title")
         self.pass_title.set_xalign(0)
@@ -420,9 +1100,13 @@ class NetWin(Gtk.Window):
             return False
         page = self.stack.get_visible_child_name()
         if page == "pass":
-            self.stack.set_visible_child_name("wifi")
+            self._pass_back()
             return True
-        if page == "wifi":
+        if page in ("wifi", "vpn", "vpncfg"):
+            if page == "vpncfg":
+                self.stack.set_visible_child_name("vpn")
+                self.resize(*VPN_SIZE)
+                return True
             self.go_home()
             return True
         Gtk.main_quit()
@@ -527,13 +1211,26 @@ class NetWin(Gtk.Window):
         self.stack.set_visible_child_name("pass")
         self.pw_entry.grab_focus()
 
-    def submit_password(self):
-        ssid = self._pass_ssid
-        pw = self.pw_entry.get_text()
-        if not ssid:
+    def _pass_back(self):
+        if self._pass_mode in ("vpn-psk", "vpn-eap"):
+            self.stack.set_visible_child_name("vpn")
+            self.resize(*VPN_SIZE)
             return
+        self.stack.set_visible_child_name("wifi")
+
+    def submit_password(self):
+        pw = self.pw_entry.get_text()
         if not pw:
             self.set_status(self.pass_status, "password required", error=True)
+            return
+        if self._pass_mode == "vpn-psk":
+            self._connect_existing_vpn(self._pass_vpn_uuid, psk=pw)
+            return
+        if self._pass_mode == "vpn-eap":
+            self._connect_existing_vpn(self._pass_vpn_uuid, password=pw)
+            return
+        ssid = self._pass_ssid
+        if not ssid:
             return
         self._connect(ssid, pw)
 
@@ -572,6 +1269,353 @@ class NetWin(Gtk.Window):
         else:
             self.set_status(self.wifi_status, msg, error=True)
 
+
+    def open_vpn(self):
+        self.resize(*VPN_SIZE)
+        self.stack.set_visible_child_name("vpn")
+        self.refresh_vpn()
+
+    def _vpn_page(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.set_margin_top(12)
+        box.set_margin_bottom(12)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+        head = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        back = Gtk.Button(label="←")
+        back.connect("clicked", lambda *_: self.go_home())
+        title = Gtk.Label(label="vpn")
+        title.get_style_context().add_class("title")
+        title.set_xalign(0)
+        head.pack_start(back, False, False, 0)
+        head.pack_start(title, True, True, 0)
+        box.pack_start(head, False, False, 0)
+        self.vpn_status = Gtk.Label(label="")
+        self.vpn_status.set_xalign(0)
+        self.vpn_status.set_line_wrap(True)
+        self.vpn_status.get_style_context().add_class("dim")
+        box.pack_start(self.vpn_status, False, False, 0)
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_vexpand(True)
+        scroll.set_hexpand(True)
+        self.vpn_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        scroll.add(self.vpn_box)
+        box.pack_start(scroll, True, True, 0)
+        for label, fn in (
+            ("Configure", self.open_vpn_cfg),
+            ("Connect", self.connect_selected_vpn),
+            ("Disconnect", self.disconnect_selected_vpn),
+            ("Refresh", self.refresh_vpn),
+        ):
+            b = Gtk.Button(label=label)
+            b.connect("clicked", lambda _w, f=fn: f())
+            box.pack_start(b, False, False, 0)
+        return box
+
+    def _vpn_cfg_page(self):
+        # L-3: wrap the form so it stays usable at 1024x640.
+        outer = Gtk.ScrolledWindow()
+        outer.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        outer.set_hexpand(True)
+        outer.set_vexpand(True)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.set_margin_top(12)
+        box.set_margin_bottom(12)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+        head = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        back = Gtk.Button(label="←")
+        back.connect("clicked", lambda *_: self.open_vpn())
+        title = Gtk.Label(label="configure vpn")
+        title.get_style_context().add_class("title")
+        title.set_xalign(0)
+        head.pack_start(back, False, False, 0)
+        head.pack_start(title, True, True, 0)
+        box.pack_start(head, False, False, 0)
+        self.vpn_name = Gtk.Entry()
+        self.vpn_name.set_placeholder_text("name")
+        box.pack_start(self.vpn_name, False, False, 0)
+        self.vpn_gateway = Gtk.Entry()
+        self.vpn_gateway.set_placeholder_text("gateway")
+        box.pack_start(self.vpn_gateway, False, False, 0)
+        self.vpn_auth = Gtk.ComboBoxText()
+        self.vpn_auth.append("psk", "Pre-shared key")
+        self.vpn_auth.append("certificate", "Certificate (NSS nickname)")
+        self.vpn_auth.append("eap", EAP_USERNAME_PASSWORD_UNSUPPORTED)
+        self.vpn_auth.set_active_id("psk")
+        self.vpn_auth.connect("changed", lambda *_: self._vpn_cfg_toggle())
+        box.pack_start(self.vpn_auth, False, False, 0)
+        self.vpn_psk = Gtk.Entry()
+        self.vpn_psk.set_visibility(False)
+        self.vpn_psk.set_placeholder_text("pre-shared key")
+        box.pack_start(self.vpn_psk, False, False, 0)
+        self.vpn_cert = Gtk.Entry()
+        self.vpn_cert.set_placeholder_text("NSS certificate nickname")
+        box.pack_start(self.vpn_cert, False, False, 0)
+        self.vpn_user = Gtk.Entry()
+        self.vpn_user.set_placeholder_text("username")
+        box.pack_start(self.vpn_user, False, False, 0)
+        self.vpn_eap_pw = Gtk.Entry()
+        self.vpn_eap_pw.set_visibility(False)
+        self.vpn_eap_pw.set_placeholder_text("password")
+        box.pack_start(self.vpn_eap_pw, False, False, 0)
+        self.vpn_cfg_status = Gtk.Label(label="")
+        self.vpn_cfg_status.set_xalign(0)
+        self.vpn_cfg_status.set_line_wrap(True)
+        self.vpn_cfg_status.get_style_context().add_class("dim")
+        box.pack_start(self.vpn_cfg_status, False, False, 0)
+        go = Gtk.Button(label="Save and connect")
+        go.connect("clicked", lambda *_: self.submit_vpn_cfg())
+        box.pack_start(go, False, False, 0)
+        outer.add(box)
+        return outer
+
+    def _vpn_cfg_toggle(self):
+        kind = self.vpn_auth.get_active_id() or "psk"
+        self.vpn_psk.set_visible(kind == "psk")
+        self.vpn_cert.set_visible(kind == "certificate")
+        # Refuse before any password prompt: keep the option selectable,
+        # but do not collect a username or password for this method.
+        self.vpn_user.set_visible(False)
+        self.vpn_eap_pw.set_visible(False)
+        status = getattr(self, "vpn_cfg_status", None)
+        if status is not None:
+            if kind == "eap":
+                self.set_status(status, EAP_USERNAME_PASSWORD_UNSUPPORTED, error=True)
+            elif status.get_text() == EAP_USERNAME_PASSWORD_UNSUPPORTED:
+                self.set_status(status, "")
+
+    def open_vpn_cfg(self):
+        self.resize(*VPN_SIZE)
+        for entry in (
+            self.vpn_name,
+            self.vpn_gateway,
+            self.vpn_psk,
+            self.vpn_cert,
+            self.vpn_user,
+            self.vpn_eap_pw,
+        ):
+            entry.set_text("")
+        self.vpn_auth.set_active_id("psk")
+        self._vpn_cfg_toggle()
+        self.set_status(self.vpn_cfg_status, "IPsec via NetworkManager-libreswan")
+        self.stack.set_visible_child_name("vpncfg")
+
+    def refresh_vpn(self):
+        if self._busy:
+            return
+        self._busy = True
+        self.set_status(self.vpn_status, "loading…")
+
+        def work():
+            return list_libreswan_profiles(), active_vpn_uuids()
+
+        def done(result, err):
+            self._busy = False
+            if err is not None:
+                self.set_status(self.vpn_status, "could not list VPNs", error=True)
+                return
+            rows, active = result
+            self._fill_vpns(rows, active)
+
+        in_thread(work, done)
+
+    def _fill_vpns(self, rows: list[dict], active: set[str]):
+        for child in list(self.vpn_box.get_children()):
+            self.vpn_box.remove(child)
+        labels = {"psk": "PSK", "certificate": "cert", "eap": EAP_USERNAME_PASSWORD_UNSUPPORTED}
+        if self._vpn_selected and self._vpn_selected not in {r["uuid"] for r in rows}:
+            self._vpn_selected = None
+        for row in rows:
+            btn = Gtk.Button()
+            btn.get_style_context().add_class("ap")
+            box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            name = Gtk.Label(label=row["name"])
+            name.set_xalign(0)
+            name.set_ellipsize(Pango.EllipsizeMode.END)
+            name.get_style_context().add_class("ssid")
+            on = row["uuid"] in active
+            if on:
+                name.get_style_context().add_class("on")
+            if row["uuid"] == self._vpn_selected:
+                name.get_style_context().add_class("on")
+            meta_bits = [labels.get(row["kind"], row["kind"])]
+            if on:
+                meta_bits.append("on")
+            meta = Gtk.Label(label="  ".join(meta_bits))
+            meta.set_xalign(1)
+            meta.get_style_context().add_class("dim")
+            box.pack_start(name, True, True, 0)
+            box.pack_start(meta, False, False, 0)
+            btn.add(box)
+            btn.connect("clicked", lambda _w, u=row["uuid"]: self._select_vpn(u))
+            self.vpn_box.pack_start(btn, False, False, 0)
+        self.vpn_box.show_all()
+        n = len(rows)
+        if n == 0:
+            self.set_status(self.vpn_status, "no IPsec VPNs")
+        else:
+            self.set_status(self.vpn_status, f"{n} IPsec VPN{'s' if n != 1 else ''}")
+
+    def _select_vpn(self, uuid_value: str):
+        self._vpn_selected = uuid_value
+        self.refresh_vpn()
+
+    def connect_selected_vpn(self):
+        if self._busy:
+            return
+        uuid_value = self._vpn_selected
+        if not uuid_value:
+            self.set_status(self.vpn_status, "select a VPN first", error=True)
+            return
+
+        def work():
+            rows = {r["uuid"]: r for r in list_libreswan_profiles()}
+            return rows.get(uuid_value)
+
+        def done(row, err):
+            if err is not None or row is None:
+                self._busy = False
+                self.set_status(self.vpn_status, "select a VPN first", error=True)
+                return
+            kind = row["kind"]
+            if kind == "eap":
+                self._busy = False
+                self.set_status(self.vpn_status, EAP_USERNAME_PASSWORD_UNSUPPORTED, error=True)
+                return
+            if kind == "certificate":
+                self._connect_existing_vpn(uuid_value)
+                return
+            self._busy = False
+            self._pass_mode = "vpn-psk" if kind == "psk" else "vpn-eap"
+            self._pass_vpn_uuid = uuid_value
+            self._pass_ssid = ""
+            self.pass_title.set_text(row["name"])
+            self.pw_entry.set_text("")
+            self.set_status(
+                self.pass_status,
+                "pre-shared key required" if kind == "psk" else "password required",
+            )
+            self.stack.set_visible_child_name("pass")
+            self.pw_entry.grab_focus()
+
+        self._busy = True
+        in_thread(work, done)
+
+    def _connect_existing_vpn(self, uuid_value: str, psk=None, password=None):
+        if self._busy:
+            return
+        if not uuid_value:
+            return
+        self._busy = True
+        page = self.stack.get_visible_child_name()
+        if page == "pass":
+            self.set_status(self.pass_status, "connecting…")
+        else:
+            self.set_status(self.vpn_status, "connecting…")
+
+        def work():
+            return connect_libreswan(uuid_value, psk=psk, password=password)
+
+        def done(result, err):
+            self._busy = False
+            if err is not None:
+                self._fail_vpn("could not connect")
+                return
+            ok, msg = result
+            if ok:
+                Gtk.main_quit()
+                return
+            self._fail_vpn(msg)
+
+        in_thread(work, done)
+
+    def _fail_vpn(self, msg: str):
+        if self.stack.get_visible_child_name() == "pass":
+            self.set_status(self.pass_status, msg, error=True)
+        elif self.stack.get_visible_child_name() == "vpncfg":
+            self.set_status(self.vpn_cfg_status, msg, error=True)
+        else:
+            self.set_status(self.vpn_status, msg, error=True)
+
+    def disconnect_selected_vpn(self):
+        if self._busy:
+            return
+        uuid_value = self._vpn_selected
+        self._busy = True
+        self.set_status(self.vpn_status, "disconnecting…")
+
+        def work():
+            target = uuid_value
+            if not target:
+                active = active_vpn_uuids()
+                for row in list_libreswan_profiles():
+                    if row["uuid"] in active:
+                        target = row["uuid"]
+                        break
+            if not target:
+                return False, "no VPN selected"
+            return disconnect_libreswan(target)
+
+        def done(result, err):
+            self._busy = False
+            if err is not None:
+                self.set_status(self.vpn_status, "could not disconnect", error=True)
+                return
+            ok, msg = result
+            if ok:
+                self.refresh_vpn()
+                return
+            self.set_status(self.vpn_status, msg, error=True)
+
+        in_thread(work, done)
+
+    def submit_vpn_cfg(self):
+        if self._busy:
+            return
+        kind = self.vpn_auth.get_active_id() or "psk"
+        if kind == "eap":
+            self.set_status(self.vpn_cfg_status, EAP_USERNAME_PASSWORD_UNSUPPORTED, error=True)
+            return
+        name = self.vpn_name.get_text().strip()
+        gateway = self.vpn_gateway.get_text().strip()
+        username = self.vpn_user.get_text().strip()
+        cert = self.vpn_cert.get_text().strip()
+        psk = self.vpn_psk.get_text() if kind == "psk" else None
+        password = self.vpn_eap_pw.get_text() if kind == "eap" else None
+        self._busy = True
+        status = "connecting…"
+        if kind == "psk" and psk:
+            warn = vpn_psk_strength_warning(psk)
+            if warn:
+                status = "connecting… (" + warn + ")"
+        self.set_status(self.vpn_cfg_status, status)
+
+        def work():
+            return configure_and_connect_libreswan(
+                name,
+                gateway,
+                kind,
+                username=username,
+                cert=cert,
+                psk=psk,
+                password=password,
+            )
+
+        def done(result, err):
+            self._busy = False
+            if err is not None:
+                self.set_status(self.vpn_cfg_status, "could not connect", error=True)
+                return
+            ok, msg = result
+            if ok:
+                Gtk.main_quit()
+                return
+            self.set_status(self.vpn_cfg_status, msg, error=True)
+
+        in_thread(work, done)
+
     def edit(self):
         spawn("nm-connection-editor")
         Gtk.main_quit()
@@ -587,7 +1631,7 @@ class NetWin(Gtk.Window):
         Gtk.main_quit()
 
     def nmtui(self):
-        spawn("alacritty", "--class", "AvalonOS-nmtui", "-e", "nmtui")
+        spawn("avalonos-alacritty", "--class", "AvalonOS-nmtui", "-e", "nmtui")
         Gtk.main_quit()
 
     def disconnect(self):
@@ -602,8 +1646,10 @@ class NetWin(Gtk.Window):
 
 
 def main():
+    PIDFILE = runtime_dir() / "avalonos-net.pid"
     if already_running():
         sys.exit(0)
+    _clear_stale_nm_tempfiles()
     GLib.set_prgname(APP_ID)
     PIDFILE.write_text(str(os.getpid()))
     css = Gtk.CssProvider()

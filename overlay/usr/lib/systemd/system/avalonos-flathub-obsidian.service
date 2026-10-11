@@ -1,0 +1,30 @@
+[Unit]
+Description=AvalonOS first-boot Flathub remote and Obsidian install
+Documentation=file:///usr/share/doc/avalonos-docs/AvalonOS-Docs/docs/decisions/0021-first-boot-flathub-obsidian.md
+After=network-online.target
+Wants=network-online.target
+# Must not block greetd or first-boot user creation. Offline first boot
+# leaves Obsidian to a later retry when the network is up.
+ConditionPathExists=!/var/lib/avalonos/obsidian-flatpak.done
+# L-2: StartLimitIntervalSec belongs in [Unit]. 0 keeps the accepted
+# unbounded retry-until-a-route-appears behaviour (P-I27 is deferred).
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/avalonos/flathub-obsidian
+# Keep retrying after a failed or offline attempt; do not give up after a burst.
+Restart=on-failure
+RestartSec=120
+# Hardening that still allows a system Flatpak install (P-L25).
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/flatpak /var/lib/avalonos /var/tmp /tmp /etc/flatpak
+
+[Install]
+WantedBy=multi-user.target

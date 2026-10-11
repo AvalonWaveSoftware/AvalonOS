@@ -123,18 +123,55 @@ with tempfile.TemporaryDirectory(prefix='avalonos-vd-') as tmp:
         bad[off:off+len(value)] = value
         check(not validate(image(extra={17: bad})), f'invalid terminator field {off} rejected')
 
+    # Partition-offset view (16+po = 32) may legitimately differ and is
+    # still exempted when it is a valid same-volume set (P-I21).
+    check(validate(image(extra={32: pvd(96), 33: descriptor(255)})) == allowed(16,17,32,33),
+          'nonidentical valid partition-offset set at LBA 32 exempted')
+    # R9-B1: 64 is compared to 16, 80 to 32. Only PVD bytes 80-87
+    # (volume-space size) may differ; LE/BE must agree and cand <= ref.
     extra = {32: pvd(), 33: descriptor(255), 64: pvd(96), 65: descriptor(255),
              80: pvd(112), 81: descriptor(255)}
     check(validate(image(extra=extra)) == allowed(16,17,32,33,64,65,80,81),
-          'nonidentical valid PVD sets at LBA 64/80 accepted')
+          '64/80 sets that differ only in volume-space size are exempted')
+    too_big = pvd(200)
+    check(validate(image(extra={64: too_big, 65: descriptor(255)})) == allowed(16,17),
+          'alias volume-space larger than the reference is not exempted')
+    endian = pvd(96)
+    endian[84:88] = (200).to_bytes(4, 'big')  # LE 96, BE 200
+    check(validate(image(extra={64: endian, 65: descriptor(255)})) == allowed(16,17),
+          'alias volume-space endian mismatch is not exempted')
+    other = pvd()
+    other[1000] ^= 1
+    check(validate(image(extra={64: other, 65: descriptor(255)})) == allowed(16,17),
+          'alias set with a non-volume-space difference is not exempted')
+    extra = {lba + i: sector for lba in (32, 64, 80)
+             for i, sector in enumerate((pvd(), descriptor(255)))}
+    check(validate(image(extra=extra)) == allowed(16,17,32,33,64,65,80,81),
+          'identical principal copies at candidate LBA 64/80 exempted')
+    # 80 matches 32 (not 16): offset-view 32 may differ from principal.
+    extra = {32: pvd(96), 33: descriptor(255), 80: pvd(80), 81: descriptor(255)}
+    check(validate(image(extra=extra)) == allowed(16,17,32,33,80,81),
+          'LBA 80 is compared to the offset-view at 32, not to LBA 16')
+    # Root extent 20 (pvd default) is greater than alias volume-space 10,
+    # so independent is_pvd would reject the alias. A 1.5.8 near-copy
+    # must still be exempted (R9-B1).
+    extra = {32: pvd(), 33: descriptor(255), 80: pvd(10), 81: descriptor(255)}
+    check(validate(image(extra=extra)) == allowed(16,17,32,33,80,81),
+          'alias volume-space smaller than the root extent is still exempted')
+    extra = {lba + i: sector for lba in (32, 64, 80)
+             for i, sector in enumerate((pvd(), descriptor(255)))}
+    changed_terminator = descriptor(255)
+    changed_terminator[100] = 1
+    check(validate(image(extra={64: pvd(), 65: changed_terminator})) == allowed(16,17),
+          'candidate with nonidentical terminator not exempted')
     bad = pvd(96)
     bad[40:72] = b'OTHER_VOLUME'.ljust(32, b' ')
     check(validate(image(extra={64: bad, 65: descriptor(255)})) == allowed(16,17),
           'additional set with mismatched volume id rejected')
     # P-L16: a valid same-volume set outside the layout-derived candidates
     # is not exempted (this is the S1/appended-ISO case).
-    check(validate(image(extra={50: pvd(96), 51: descriptor(255)})) == allowed(16,17),
-          'valid same-volume set at non-candidate LBA 50 not exempted')
+    check(validate(image(extra={50: pvd(), 51: descriptor(255)})) == allowed(16,17),
+          'identical set at non-candidate LBA 50 not exempted')
     # With no system-area data, only the principal set at 16 is a candidate.
     check(validate(image(extra=extra), sa="") == allowed(16,17),
           'empty system-area report accepts only the principal set')

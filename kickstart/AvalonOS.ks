@@ -53,7 +53,7 @@ repo --name=rpmfusion-nonfree-updates
 # NVIDIA modeset / simpledrm args are added in %post by avalonos-hw.
 @AVALONOS_STORAGE@
 
-services --enabled=NetworkManager,iwd,bluetooth,greetd
+services --enabled=NetworkManager,iwd,greetd --disabled=bluetooth
 
 @AVALONOS_INSTGUARD@
 
@@ -214,7 +214,10 @@ systemctl set-default graphical.target
 systemctl enable avalonos-firstboot-user.service avalonos-gpu-select.service
 systemctl enable greetd.service
 ln -sfn /usr/lib/systemd/system/greetd.service /etc/systemd/system/display-manager.service
-systemctl enable NetworkManager.service NetworkManager-wait-online.service iwd.service bluetooth.service
+systemctl enable NetworkManager.service NetworkManager-wait-online.service iwd.service
+# H-1: NM-libreswan does not start pluto.
+systemctl enable ipsec.service
+systemctl disable bluetooth.service
 systemctl enable switcheroo-control.service 2>/dev/null || true
 systemctl mask lightdm.service 2>/dev/null || true
 

@@ -6,16 +6,31 @@ if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
     exit 1
 fi
 pidfile="$XDG_RUNTIME_DIR/avalonos-btop.pid"
+
+is_alacritty_pid() {
+    # $1 = pid. Accept only a still-running Alacritty (not systemd-cat, not a reused PID).
+    pid=$1
+    case "$pid" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    comm=$(cat "/proc/$pid/comm" 2>/dev/null || true)
+    [ "$comm" = alacritty ] || return 1
+    exe=$(readlink "/proc/$pid/exe" 2>/dev/null || true)
+    base=$(basename -- "$exe" 2>/dev/null || true)
+    [ "$base" = alacritty ] || [ "$base" = "alacritty (deleted)" ] || return 1
+    kill -0 "$pid" 2>/dev/null
+}
+
 if [ -f "$pidfile" ]; then
     pid=$(cat "$pidfile" 2>/dev/null || true)
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    if is_alacritty_pid "$pid"; then
         kill "$pid" 2>/dev/null || true
         rm -f "$pidfile"
         exit 0
     fi
     rm -f "$pidfile"
 fi
-alacritty --class AvalonOS-btop -e btop \
+avalonos-alacritty --class AvalonOS-btop -e btop \
     -c /usr/share/AvalonOS/btop.conf \
     --themes-dir /usr/share/AvalonOS/btop-themes >/dev/null 2>&1 &
 echo $! >"$pidfile"

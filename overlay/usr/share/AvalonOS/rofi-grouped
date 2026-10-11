@@ -199,9 +199,23 @@ def launch(desktop_path: str) -> None:
     if app:
         cmd = split_exec(app["Exec"])
         if cmd and app.get("Terminal", "").lower() == "true":
-            term = shutil.which("alacritty") or shutil.which("xterm")
+            # Prefer the wrapper by absolute path so a PATH-only lookup
+            # cannot skip it (P-I33). Raw alacritty/xterm remain a last
+            # resort if the wrapper is not installed.
+            wrap = "/usr/bin/avalonos-alacritty"
+            term = (
+                wrap if Path(wrap).is_file() else None
+            ) or shutil.which("avalonos-alacritty") or shutil.which("alacritty") or shutil.which("xterm")
             if term:
                 cmd = [term, "-e", *cmd]
+        if cmd and Path(cmd[0]).name == "alacritty":
+            wrap = "/usr/bin/avalonos-alacritty"
+            if Path(wrap).is_file():
+                cmd = [wrap, *cmd[1:]]
+            else:
+                alt = shutil.which("avalonos-alacritty")
+                if alt:
+                    cmd = [alt, *cmd[1:]]
     if cmd:
         try:
             subprocess.Popen(cmd, **kw)

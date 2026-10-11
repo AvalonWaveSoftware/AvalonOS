@@ -65,12 +65,12 @@ def case(label, keys, kill_sigint=False, kbi_first=False, expect_create=True, re
     os.close(fd)
     logtxt = open(log).read(); os.unlink(log)
     tb = b"Traceback" in screen
-    ok = restored and (not tb) and ((rc == 1) if read_failure else ((rc == 0 and "create alice s3cret" in logtxt and "upgrade" in logtxt) if expect_create else rc == "hung"))
+    ok = restored and (not tb) and ((rc == 1) if read_failure else ((rc == 0 and "create alice s3cret99" in logtxt and "upgrade" in logtxt) if expect_create else rc == "hung"))
     fails += not ok
     print(f"{'PASS' if ok else 'FAIL'} {label}: rc={rc} traceback={tb} calls={logtxt.split(chr(10))[:-1]} "
           f"ignored-msg={b'ignored: create your user' in screen}")
 
-FILL = ["a", "l", "i", "c", "e", "\t", *"s3cret", "\t", *"s3cret", "\t", "\r"]
+FILL = ["a", "l", "i", "c", "e", "\t", *"s3cret99", "\t", *"s3cret99", "\t", "\r"]
 case("C0 baseline: fill form, create", FILL)
 case("C1 Ctrl-C (key) before typing, then create", ["\x03", "\x03", *FILL])
 case("C2 Ctrl-D (EOF key) mid-username, then create", ["a", "l", "\x04", "i", "c", "e", *FILL[5:]])

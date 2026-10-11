@@ -19,6 +19,17 @@ rejectw() { local d="$1" re="$2"; shift 2; local rc=0; "$@" >"$T/out" 2>&1 || rc
 rel() { AVALONOS_TEST_BUILD=0 "$@"; }
 tst() { AVALONOS_TEST_BUILD=1 "$@"; }
 X() { env -u SOURCE_DATE_EPOCH xorriso "$@"; }
+# U7 is mandatory on xorriso 1.5.8+ (R9-B1). A skip is acceptable only
+# on an older xorriso, with a clear message.
+xorriso_older_than_158() {
+    local output ver
+    output=$(xorriso -version 2>&1) || return 1
+    ver=$(printf '%s\n' "$output" | awk 'NR==1 {print $2}')
+    python3 -c 'import re,sys
+m=re.fullmatch(r"([0-9]+)\.([0-9]+)\.([0-9]+)", sys.argv[1])
+sys.exit(0 if m and tuple(map(int,m.groups())) < (1,5,8) else 1)' "$ver"
+}
+xorriso_ver() { local output; output=$(xorriso -version 2>&1) || { echo unknown; return; }; printf '%s\n' "$output" | awk 'NR==1 {print $2}'; }
 gpg --batch --homedir "$(mktemp -d -p "$T")" --dearmor < "$K" > "$T/k.bin"
 gzip -9nc < "$T/k.bin" > "$T/k.gz"
 accept "U1 upstream netinst: unowned bytes clean, release mode" rel "$CU" "$UP"
@@ -62,14 +73,24 @@ import sys
 open(sys.argv[1], "wb").write(bytes(64 * 1024))
 PY
 # -partition_offset 16 yields the 16/32 copies and GPT start 64, so
-# 64/80 are layout-derived candidates. xorriso 1.5.8 writes those 64/80
-# sets on bootable media; this small fixture may not, so we copy the
-# already-validated 16 and 32 sets into unused (all-zero) sectors at
-# 64 and 80. xorriso may exit 32 (SORRY) after a successful write.
-env -u SOURCE_DATE_EPOCH xorriso -as mkisofs -R -V U7FIXTURE \
-      -partition_offset 16 \
-      -append_partition 2 0xef "$T/u7part.img" -appended_part_as_gpt \
-      -o "$T/u7fix.iso" "$T/u7tree" >"$T/u7build.log" 2>&1 || true
+# 64/80 are layout-derived alias candidates. A tiny image places the
+# appended ESP around 512-byte sector 200, so LBA 64/80 would fall
+# inside the ESP (excluded from the unowned-byte scan). 1024k padding
+# keeps those slots in the ISO9660 partition and unowned (the only
+# file is at a later LBA). xorriso 1.5.8 copies 16→64 and 32→80,
+# allowing only the PVD volume-space-size field (bytes 80–87) to
+# differ; U7d leaves those near-copies in place. If the slots are
+# empty or do not already match, write_set copies 16→64 and 32→80.
+# xorriso may exit 32 (SORRY) after a successful write.
+env -u SOURCE_DATE_EPOCH xorriso \
+      -outdev "$T/u7fix.iso" \
+      -padding 1024k \
+      -volid U7FIXTURE \
+      -map "$T/u7tree" / \
+      -boot_image any partition_offset=16 \
+      -append_partition 2 0xef "$T/u7part.img" \
+      -boot_image any appended_part_as=gpt \
+      -commit >"$T/u7build.log" 2>&1 || true
 if [ -s "$T/u7fix.iso" ]; then
     if python3 - "$T/u7fix.iso" <<'PY'
 import sys
@@ -81,23 +102,42 @@ with open(p, "r+b") as f:
         return f.read(S)
     def is_pvd(s):
         return len(s) == S and s[0] == 1 and s[1:7] == b"CD001\x01"
-    def write_set(src, dst):
-        # Copy a terminated descriptor set from src to dst only if the
-        # destination is unused (all-zero). Volume-space size is left as
-        # in the source; the validator allows nonidentical valid sets.
+    def read_set(lba):
         sectors = []
         for i in range(32):
-            s = sector(src + i)
+            s = sector(lba + i)
             if (i == 0 and not is_pvd(s)) or (i and not (len(s) == S and s[1:7] == b"CD001\x01")):
-                return False
+                return None
             sectors.append(s)
             if s[0] == 255:
-                break
-        else:
+                return sectors
+        return None
+    def alias_copy_ok(cand, ref):
+        # Leave a real 1.5.8 near-copy: same length, identical except
+        # PVD bytes 80-87, LE/BE agree, cand volume-space <= ref.
+        if cand is None or ref is None or len(cand) != len(ref):
             return False
-        for i, s in enumerate(sectors):
+        if cand[0][:80] != ref[0][:80] or cand[0][88:] != ref[0][88:]:
+            return False
+        if cand[1:] != ref[1:]:
+            return False
+        def lebe(s):
+            return int.from_bytes(s[80:84], "little"), int.from_bytes(s[84:88], "big")
+        c_le, c_be = lebe(cand[0])
+        r_le, r_be = lebe(ref[0])
+        return c_le == c_be and r_le == r_be and c_le <= r_le
+    def write_set(src, dst):
+        # Leave dest if it already matches src except volume-space size.
+        # Otherwise copy src to dst when dest is unused or already a
+        # descriptor set (so older xorriso layouts still get a fixture).
+        src_set = read_set(src)
+        if src_set is None:
+            return False
+        if alias_copy_ok(read_set(dst), src_set):
+            return True
+        for i, s in enumerate(src_set):
             cur = sector(dst + i)
-            if cur != bytes(S) and cur != s:
+            if cur != bytes(S) and cur != s and not (len(cur) == S and cur[1:7] == b"CD001\x01"):
                 return False
             f.seek((dst + i) * S)
             f.write(s)
@@ -105,14 +145,14 @@ with open(p, "r+b") as f:
     if not (is_pvd(sector(16)) and is_pvd(sector(32))):
         print("P-L17 fixture missing PVD at LBA 16 or 32")
         sys.exit(1)
-    if not is_pvd(sector(64)):
-        if not write_set(16, 64):
-            print("P-L17 fixture could not place a validated set at LBA 64")
-            sys.exit(1)
-    if not is_pvd(sector(80)):
-        if not write_set(32, 80):
-            print("P-L17 fixture could not place a validated set at LBA 80")
-            sys.exit(1)
+    # R9-B1: 64 is compared with 16, 80 with 32. Prefer the real
+    # xorriso near-copies when they already match.
+    if not write_set(16, 64):
+        print("P-L17 fixture could not place a 16-matching set at LBA 64")
+        sys.exit(1)
+    if not write_set(32, 80):
+        print("P-L17 fixture could not place a 32-matching set at LBA 80")
+        sys.exit(1)
     if not (is_pvd(sector(64)) and is_pvd(sector(80))):
         print("P-L17 fixture missing PVD at LBA 64 or 80")
         sys.exit(1)
@@ -154,6 +194,52 @@ PY
             nok "U7d re-run of fixture failed or summary missing"
             sed 's/^/      /' "$T/u7off.log" 2>/dev/null | head -8
         fi
+        cp "$T/u7fix.iso" "$T/u7plant.iso"
+        python3 - "$T/u7plant.iso" <<'PYPLANT'
+import sys
+# Model an unused 64/80 alias slot in the ISO9660 partition, then plant a
+# valid same-volume set that differs outside the volume-space-size field
+# (a reserved PVD byte). Structure and volume ID stay intact, so this
+# still fails after the R9-B1 exemption.
+S = 2048
+with open(sys.argv[1], 'r+b') as f:
+    def sector(lba):
+        f.seek(lba * S)
+        return f.read(S)
+    sectors = []
+    for i in range(32):
+        s = sector(16 + i)
+        if (i == 0 and not (len(s) == S and s[0] == 1 and s[1:7] == b"CD001\x01")) \
+                or (i and not (len(s) == S and s[1:7] == b"CD001\x01")):
+            sys.exit(1)
+        sectors.append(s)
+        if s[0] == 255:
+            break
+    else:
+        sys.exit(1)
+    principal = b"".join(sectors)
+    f.seek(64 * S)
+    f.write(principal)
+    f.seek(64 * S + 1000)
+    b = f.read(1)
+    f.seek(64 * S + 1000)
+    f.write(bytes([b[0] ^ 1]))
+PYPLANT
+        rejectw "U7p planted nonidentical same-volume set at candidate LBA 64 fails" 'ISO9660 data at offset' rel "$CU" "$T/u7plant.iso"
+        cp "$T/u7fix.iso" "$T/u7zero.iso"
+        python3 - "$T/u7zero.iso" <<'PYZERO'
+import sys
+with open(sys.argv[1], 'r+b') as f:
+    f.seek(64 * 2048 + 80)
+    f.write(bytes(8))
+PYZERO
+        rc=0
+        timeout -k 2s 30s env AVALONOS_TEST_BUILD=0 "$CU" "$T/u7zero.iso" >"$T/u7zero.log" 2>&1 || rc=$?
+        if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] && [ "$rc" -ne 137 ]; then
+            ok "U7 zero-volume alias fails promptly"
+        else
+            nok "U7 zero-volume alias did not fail promptly (exit $rc)"
+        fi
         cp "$T/u7fix.iso" "$T/u7inj.iso"
         printf 'xxCD001yy' >> "$T/u7inj.iso"
         rejectw "U8d CD001 injected outside validated descriptor sectors still fails" 'ISO9660 data at offset' rel "$CU" "$T/u7inj.iso"
@@ -163,15 +249,15 @@ PY
 else
     nok "U7d could not build the deterministic 64/80 fixture"; sed 's/^/      /' "$T/u7build.log" | tail -8
 fi
-# Optional live boot-replay of the upstream ISO: require a PVD at LBA 80
-# or report SKIP (counted). Do not vacuous-ok when LBA 80 is absent.
+# Live boot-replay: only a successfully identified pre-1.5.8 version may skip.
 esp_type="$(X -indev "$UP" -report_system_area plain 2>/dev/null | awk '$1=="GPT" && $2=="type" && $5=="2" {print $6}')"
 if [ -n "$esp_type" ] && [ -s "$T/up-esp.img" ] && \
    env -u SOURCE_DATE_EPOCH xorriso -indev "$UP" -outdev "$T/replay.iso" \
       -boot_image any replay \
       -append_partition 2 "$esp_type" "$T/up-esp.img" \
       -boot_image any efi_path=--interval:appended_partition_2:all:: \
-      -commit_eject all >"$T/replay.log" 2>&1; then
+      -commit_eject all >"$T/replay.log" 2>&1 && \
+   [ -s "$T/replay.iso" ]; then
     if python3 - "$T/replay.iso" <<'PY'
 import sys
 p = sys.argv[1]
@@ -189,13 +275,21 @@ PY
     else
         rc=$?
         if [ "$rc" = 2 ]; then
-            skip "U7 replay ISO has no PVD at LBA 80"
+            if xorriso_older_than_158; then
+                skip "U7 replay ISO has no PVD at LBA 80 (xorriso $(xorriso_ver) is older than 1.5.8)"
+            else
+                nok "U7 replay ISO has no PVD at LBA 80 (mandatory on xorriso $(xorriso_ver), including unknown versions)"
+            fi
         else
             nok "U7 replay ISO PVD probe failed"
         fi
     fi
 else
-    skip "U7 could not build a xorriso replay ISO"
+    if xorriso_older_than_158; then
+        skip "U7 could not build a xorriso replay ISO (xorriso $(xorriso_ver) is older than 1.5.8; skip is acceptable)"
+    else
+        nok "U7 could not build a xorriso replay ISO (mandatory on xorriso $(xorriso_ver), including unknown versions)"
+    fi
     sed 's/^/      /' "$T/replay.log" 2>/dev/null | tail -8
 fi
 rm -f "$T/replay.iso" "$T/u7fix.iso" "$T/u7inj.iso"

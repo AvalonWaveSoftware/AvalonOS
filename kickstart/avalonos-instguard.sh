@@ -36,11 +36,13 @@ done
 # Do not print the matching token (it may contain a URL or other data).
 command -v python3 >/dev/null 2>&1 || die "python3 is required to parse installer command lines"
 python3 - <<'AVIG' || die "a forbidden boot option (repo, addrepo, noverifyssl, or method) was present; it bypasses the pinned, signature-checked repos"
-import os, pathlib, shlex, sys
+import pathlib, shlex, sys
 
 FORBIDDEN = {"repo", "addrepo", "noverifyssl", "method"}
-root = pathlib.Path(os.environ.get("AVALONOS_INSTGUARD_ROOT", "/"))
-paths = [root / "proc/cmdline"]
+# P-L18: no environment override. Tests may rewrite this root on a copy.
+root = pathlib.Path("/")
+cmdline = root / "proc/cmdline"
+paths = [cmdline]
 for cand in (
     root / "run/install/cmdline",
     root / "etc/anaconda/cmdline",
@@ -66,6 +68,9 @@ for p in paths:
     try:
         text = p.read_text(errors="replace")
     except OSError:
+        # P-L18: a missing or unreadable /proc/cmdline fails closed.
+        if p == cmdline:
+            sys.exit(1)
         continue
     try:
         tokens = shlex.split(text, posix=True)

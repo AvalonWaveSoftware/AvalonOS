@@ -52,9 +52,22 @@ fail=0
 ok()  { echo "  ok   $*"; }
 bad() { echo "  FAIL $*"; fail=1; }
 chk() { local d="$1"; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d"; fi; }
+exec 3>&2
+X() {
+    local limit="$1" rc=0; shift
+    timeout -k 2s "$limit" "$@" || rc=$?
+    if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+        echo "verify-iso: FAIL: xorriso timed out ($limit)" >&3
+        # P-I28: exit 1 inside $(X …) only ends the subshell; the main
+        # shell sees the marker.
+        : > "$T/xorriso-timeout"
+        exit 1
+    fi
+    return "$rc"
+}
 echo "verify-iso: $ISO"
 
-xorriso -indev "$ISO" -pvd_info -report_el_torito plain -report_system_area plain > "$T/rep" 2>/dev/null
+X 30s xorriso -indev "$ISO" -pvd_info -report_el_torito plain -report_system_area plain > "$T/rep" 2>/dev/null
 chk "volume id $VOLUME_ID"                grep -q "^Volume Id    : $VOLUME_ID\$" "$T/rep"
 chk "El Torito BIOS image /images/eltorito.img" grep -q "^El Torito img path :   1  /images/eltorito.img" "$T/rep"
 chk "El Torito BIOS boot-info-table + grub2-boot-info" grep -q "^El Torito img opts :   1  boot-info-table grub2-boot-info" "$T/rep"
@@ -65,7 +78,7 @@ efi_lba="$(awk '$1=="El" && $3=="boot" && $7=="UEFI" {print $NF}' "$T/rep")"
 read -r p2_start p2_size < <(awk '$1=="GPT" && $2=="start" && $6=="2" {print $7, $8}' "$T/rep")
 chk "UEFI El Torito image == GPT partition 2 (LBA $efi_lba)" test "$((efi_lba * 4))" = "$p2_start"
 
-xorriso -osirrox on -indev "$ISO" -extract /EFI/BOOT "$T/efi" -extract /boot/grub2/grub.cfg "$T/bios.cfg" \
+X 30s xorriso -osirrox on -indev "$ISO" -extract /EFI/BOOT "$T/efi" -extract /boot/grub2/grub.cfg "$T/bios.cfg" \
     -extract /avalonos "$T/avalonos" -extract /ks.cfg "$T/ks.cfg" -extract /ks-erase-all.cfg "$T/ks-erase-all.cfg" >/dev/null 2>&1 || true
 chmod -R u+rw "$T" 2>/dev/null || true
 dd if="$ISO" of="$T/esp.img" bs=512 skip="$p2_start" count="$p2_size" status=none
@@ -124,7 +137,7 @@ chk "updates.img: every enabled installer repo has gpgcheck=1 and a pinned file:
              END {if (s && !(g && k)) bad=1; exit bad}" "$r" || exit 1
     done; ls "$1"/upd/etc/anaconda.repos.d/fedora.repo >/dev/null' _ "$T"
 chk "updates.img: pinned keys present" bash -c "ls '$T'/upd/etc/pki/avalonos-installer/RPM-GPG-KEY-* >/dev/null"
-chk "/ks.cfg mode 0600 on the ISO" bash -c "xorriso -indev '$ISO' -lsdl /ks.cfg 2>/dev/null | grep -q '^-rw-------'"
+if X 30s xorriso -indev "$ISO" -lsdl /ks.cfg >"$T/ks-mode" 2>/dev/null && grep -q '^-rw-------' "$T/ks-mode"; then ok "/ks.cfg mode 0600 on the ISO"; else bad "/ks.cfg mode 0600 on the ISO"; fi
 chk "/avalonos/packages.inc" test -s "$T/avalonos/packages.inc"
 chk "/avalonos/repo has repodata" test -s "$T/avalonos/repo/repodata/repomd.xml"
 chk "/avalonos/$AV_KEY_NAME == keys/$AV_KEY_NAME" cmp -s "$T/avalonos/$AV_KEY_NAME" "$AV_KEY_FILE"
@@ -148,9 +161,9 @@ chk "/ks.cfg + /ks-erase-all.cfg pin only $AV_KEY_NAME ($AV_KEY_PIN)" bash -c '
 mkdir -p "$T/isoall" "$T/espall"
 # Extraction must be complete: both extractors must succeed and the extracted
 # file counts must equal the ISO's and the ESP's own listings.
-iso_n="$(env -u SOURCE_DATE_EPOCH xorriso -indev "$ISO" -find / -type f 2>/dev/null | grep -c "^'/" || true)"
+iso_n="$(X 30s env -u SOURCE_DATE_EPOCH xorriso -indev "$ISO" -find / -type f 2>/dev/null | grep -c "^'/" || true)"
 esp_n="$(MTOOLS_SKIP_CHECK=1 mdir -/ -b -i "$T/esp.img" ::/ 2>/dev/null | grep -cv '/$' || true)"
-if env -u SOURCE_DATE_EPOCH xorriso -osirrox on -indev "$ISO" -extract / "$T/isoall" >/dev/null 2>&1 \
+if X 600s env -u SOURCE_DATE_EPOCH xorriso -osirrox on -indev "$ISO" -extract / "$T/isoall" >/dev/null 2>&1 \
    && chmod -R u+rwX "$T/isoall" \
    && MTOOLS_SKIP_CHECK=1 mcopy -s -n -i "$T/esp.img" '::/*' "$T/espall/" 2>/dev/null \
    && [ "$iso_n" -gt 0 ] && [ "$(find "$T/isoall" -type f | wc -l)" = "$iso_n" ] \
@@ -207,8 +220,8 @@ if [ "$FULL" = 1 ]; then
     [ -f "$UP" ] || { bad "upstream ISO $UP not found for --full"; exit 1; }
     echo "$UPSTREAM_SHA256  $UP" | sha256sum -c --status || { bad "upstream ISO $UP is not the pinned one (upstream.env)"; exit 1; }
     echo "verify-iso: full compare against $UPSTREAM_ISO"
-    up_n="$(env -u SOURCE_DATE_EPOCH xorriso -indev "$UP" -find / -type f 2>/dev/null | grep -c "^'/" || true)"
-    if ! env -u SOURCE_DATE_EPOCH xorriso -osirrox on -indev "$UP" -extract / "$T/up" >/dev/null 2>&1 \
+    up_n="$(X 30s env -u SOURCE_DATE_EPOCH xorriso -indev "$UP" -find / -type f 2>/dev/null | grep -c "^'/" || true)"
+    if ! X 600s env -u SOURCE_DATE_EPOCH xorriso -osirrox on -indev "$UP" -extract / "$T/up" >/dev/null 2>&1 \
        || ! chmod -R u+rwX "$T/up" || [ "$(find "$T/up" -type f | wc -l)" != "$up_n" ]; then
         bad "upstream ISO extraction incomplete"; echo "verify-iso: FAILED"; exit 1
     fi
@@ -240,7 +253,7 @@ sys.exit(0 if len(a) == len(b) > 2556 and m(a) == m(b) else 1)' "$T/up/images/el
         cmp -s EFI/BOOT/grub.cfg "$1/isoall/EFI/BOOT/grub.cfg" && cmp -s EFI/BOOT/grub.cfg "$1/isoall/EFI/BOOT/BOOT.conf" &&
         cmp -s boot/grub2/grub.cfg "$1/isoall/boot/grub2/grub.cfg"' _ "$T" "$ROOT"
     # ESP: same size and files as upstream's, except the two GRUB configs.
-    read -r ups uz < <(env -u SOURCE_DATE_EPOCH xorriso -indev "$UP" -report_system_area plain 2>/dev/null | awk '$1=="GPT" && $2=="start" && $6=="2" {print $7, $8}')
+    read -r ups uz < <(X 30s env -u SOURCE_DATE_EPOCH xorriso -indev "$UP" -report_system_area plain 2>/dev/null | awk '$1=="GPT" && $2=="start" && $6=="2" {print $7, $8}')
     dd if="$UP" of="$T/esp-up.img" bs=512 skip="$ups" count="$uz" status=none
     mkdir -p "$T/espup"
     chk "ESP == upstream ESP: same size, same files, all identical except EFI/BOOT/grub.cfg and BOOT.conf" bash -c '
@@ -250,4 +263,5 @@ sys.exit(0 if len(a) == len(b) > 2556 and m(a) == m(b) else 1)' "$T/up/images/el
              <(cd "$1/espall" && find . -type f ! -path ./EFI/BOOT/grub.cfg ! -path ./EFI/BOOT/BOOT.conf -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) >/dev/null &&
         diff <(cd "$1/espup" && find . | LC_ALL=C sort) <(cd "$1/espall" && find . | LC_ALL=C sort) >/dev/null' _ "$T"
 fi
+[ ! -e "$T/xorriso-timeout" ] || fail=1
 [ "$fail" = 0 ] && echo "verify-iso: PASS" || { echo "verify-iso: FAILED"; exit 1; }

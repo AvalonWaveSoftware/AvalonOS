@@ -92,6 +92,12 @@ On the first boot a text screen on tty1 asks for a **username and password**
 (no default account exists; root stays locked, admin via `sudo`). After that
 the machine updates, reboots, and tuigreet shows the login screen.
 
+The installer image includes the Fedora `flatpak` package only. When a
+network route is up, first boot adds the Flathub remote and installs
+Obsidian (`md.obsidian.Obsidian`). If the first boot is offline, login
+still works and Obsidian is installed later, once the network is
+available. The ISO does not contain Flathub content.
+
 Machines with an NVIDIA GPU build `akmod-nvidia` during install (Secure Boot
 off; see step 3); the first boot may take a little longer.
 
@@ -115,4 +121,19 @@ off; see step 3); the first boot may take a little longer.
   it. In QEMU/libvirt use a virtio GPU (`-vga virtio`, or `virtio-vga-gl` with
   `gl=on` for 3D). On a machine that also has a real GPU, plug the monitor
   into that GPU. The text console (Ctrl+Alt+F2) still works.
-- After login, Alacritty (Super+Return) does not launch in a virtual machine. This is a known limitation.
+- Alacritty is started through `avalonos-alacritty`. When `gpu-select`
+  chose software GL (the exact line `MESA_LOADER_DRIVER_OVERRIDE=kms_swrast`
+  is in `/run/avalonos/gpu.env`), the wrapper sets `LIBGL_ALWAYS_SOFTWARE=1`
+  for that Alacritty process and what it launches. It never passes
+  `MESA_LOADER_DRIVER_OVERRIDE` to the client and unsets an inherited
+  value: that override is for niri only (niri.service EnvironmentFile,
+  plus a niri `environment { MESA_LOADER_DRIVER_OVERRIDE null }` block
+  so niri-spawned clients do not inherit it). Hardware GL and virtio-gpu
+  3D (virgl) get neither the override nor `LIBGL_ALWAYS_SOFTWARE`.
+  Journal logging (identifier `avalonos-alacritty`) is best-effort: if
+  systemd-cat or journald is unavailable (including a leftover journal socket after journald stops), Alacritty still starts. niri starts xwayland-satellite through `avalonos-xwayland-satellite`, which uses the same client GPU policy. The
+  launcher fallback prefers `/usr/bin/avalonos-alacritty` and may fall
+  back to raw alacritty or xterm. Display-only adapters (QEMU `-vga std`
+  or QXL, no render node) still cannot start the niri desktop; use a
+  virtio GPU (2D or 3D), as in the previous item. Live confirmation of
+  the virtio-gpu 2D / `avalonos.gpu=sw` path is pending QA re-test.
