@@ -1,0 +1,89 @@
+name: Build and release ISO
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to attach the ISO to (empty: build only, upload as a short-lived workflow artifact)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: registry.fedoraproject.org/fedora:44
+    timeout-minutes: 90
+    env:
+      ISO: AvalonOS-netinst-x86_64.iso
+    steps:
+      - name: Install build tools
+        run: |
+          dnf -y --setopt=install_weak_deps=False install \
+            git-core xorriso mtools gnupg2 curl patch tar findutils diffutils gawk coreutils gh
+      - uses: actions/checkout@v4
+
+      - name: Read upstream.env
+        id: up
+        run: |
+          . ./upstream.env
+          echo "iso=$UPSTREAM_ISO" >> "$GITHUB_OUTPUT"
+          echo "sha256=$UPSTREAM_SHA256" >> "$GITHUB_OUTPUT"
+
+      - name: Cache upstream ISO
+        uses: actions/cache@v4
+        with:
+          path: cache/${{ steps.up.outputs.iso }}
+          key: upstream-iso-${{ steps.up.outputs.sha256 }}
+
+      - name: Build ISO
+        env:
+          AVALONOS_ADMIN_PW_HASH: ${{ secrets.AVALONOS_ADMIN_PW_HASH }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          if [ -z "$AVALONOS_ADMIN_PW_HASH" ]; then
+            echo "::error::Repository secret AVALONOS_ADMIN_PW_HASH is not set (generate with: mkpasswd -m yescrypt)"
+            exit 1
+          fi
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          scripts/build-iso.sh
+          ls -l out/
+
+      - name: Resolve release tag
+        id: tag
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then t="${GITHUB_REF_NAME}"; else t="${{ inputs.tag }}"; fi
+          echo "tag=$t" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to GitHub Release
+        if: steps.tag.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --verify-tag --title "AvalonOS $TAG" \
+              --notes "AvalonOS netinst installer (remaster of Fedora $(. ./upstream.env; echo "$UPSTREAM_ISO")). Verify with: sha256sum -c $ISO.sha256"
+          fi
+          gh release upload "$TAG" "out/$ISO" "out/$ISO.sha256" --clobber
+
+      - name: Upload workflow artifact (no tag)
+        if: steps.tag.outputs.tag == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: avalonos-iso
+          path: |
+            out/${{ env.ISO }}
+            out/${{ env.ISO }}.sha256
+          retention-days: 3
+          compression-level: 0
