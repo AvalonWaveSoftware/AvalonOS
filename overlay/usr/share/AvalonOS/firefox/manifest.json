@@ -1,0 +1,43 @@
+{
+  "manifest_version": 2,
+  "name": "AvalonOS",
+  "version": "1.0.0",
+  "description": "Navy / neon / purple-red theme for AvalonOS",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "avalonos@avalonos"
+    }
+  },
+  "theme": {
+    "colors": {
+      "frame": "#0A1628",
+      "tab_background_text": "#D4FFD4",
+      "tab_text": "#0A1628",
+      "tab_line": "#39FF14",
+      "tab_selected": "#102445",
+      "toolbar": "#102445",
+      "toolbar_text": "#D4FFD4",
+      "toolbar_field": "#0A1628",
+      "toolbar_field_text": "#D4FFD4",
+      "toolbar_field_border": "#1A3A5C",
+      "toolbar_field_focus": "#0A1628",
+      "toolbar_field_border_focus": "#39FF14",
+      "bookmark_text": "#D4FFD4",
+      "icons": "#39FF14",
+      "icons_attention": "#C2185B",
+      "popup": "#102445",
+      "popup_text": "#D4FFD4",
+      "popup_border": "#1A3A5C",
+      "popup_highlight": "#39FF14",
+      "popup_highlight_text": "#0A1628",
+      "ntp_background": "#0A1628",
+      "ntp_text": "#D4FFD4",
+      "sidebar": "#0A1628",
+      "sidebar_text": "#D4FFD4",
+      "sidebar_highlight": "#39FF14",
+      "sidebar_highlight_text": "#0A1628",
+      "button_background_hover": "#1A3A5C",
+      "button_background_active": "#C2185B"
+    }
+  }
+}

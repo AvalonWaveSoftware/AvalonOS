@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Qt6 Settings
+Exec=qt6ct
+NoDisplay=true
+Hidden=true

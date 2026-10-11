@@ -1,0 +1,3 @@
+#!/bin/sh
+# Waybar custom/net exec: keep the icon; tooltip via format.
+echo ""

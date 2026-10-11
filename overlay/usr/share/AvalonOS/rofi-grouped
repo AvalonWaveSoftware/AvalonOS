@@ -1,0 +1,306 @@
+#!/usr/bin/python3
+"""AvalonOS rofi script: emit programs for one category (right column)."""
+from __future__ import annotations
+
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+# id -> (label, .desktop Categories tokens). "all" / "other" are special.
+GROUPS: list[tuple[str, str, tuple[str, ...]]] = [
+    ("internet", "Internet", ("Network", "Email", "WebBrowser", "InstantMessaging")),
+    ("office", "Office", ("Office", "WordProcessor", "Spreadsheet", "Presentation")),
+    ("graphics", "Graphics", ("Graphics", "2DGraphics", "Photography")),
+    ("audio", "Audio & Video", ("AudioVideo", "Audio", "Video", "Player", "Recorder")),
+    ("development", "Development", ("Development", "IDE", "Debugger", "TextEditor")),
+    ("games", "Games", ("Game",)),
+    ("system", "System", ("System", "TerminalEmulator", "Monitor")),
+    ("settings", "Settings", ("Settings", "DesktopSettings", "HardwareSettings")),
+    ("utilities", "Utilities", ("Utility", "Accessories", "FileTools")),
+]
+
+KNOWN = {tok for _i, _l, toks in GROUPS for tok in toks}
+FIELD_CODES = re.compile(r"(^|\s)%[fFuUdDnNickvm]")
+MODE_IDS = ("all",) + tuple(g[0] for g in GROUPS) + ("other",)
+LABELS = {"all": "All", "other": "Other", **{mid: label for mid, label, _t in GROUPS}}
+
+
+def emit_header(mode: str) -> None:
+    # Rofi 2 uses the script prompt as the mode-switcher tab label.
+    sys.stdout.write(f"\0prompt\x1f{LABELS.get(mode, mode)}\n")
+    sys.stdout.write("\0markup-rows\x1ffalse\n")
+
+
+def emit_row(
+    text: str,
+    *,
+    info: str,
+    icon: str | None = None,
+    meta: str | None = None,
+    nonselectable: bool = False,
+) -> None:
+    extra = f"\0info\x1f{info}"
+    if icon:
+        extra += f"\x1ficon\x1f{icon}"
+    if meta:
+        extra += f"\x1fmeta\x1f{meta}"
+    if nonselectable:
+        extra += "\x1fnonselectable\x1ftrue"
+    sys.stdout.write(f"{text}{extra}\n")
+
+
+def desktop_dirs() -> list[Path]:
+    dirs: list[Path] = []
+    home = Path.home() / ".local/share/applications"
+    seen: set[Path] = set()
+    for raw in os.environ.get("XDG_DATA_DIRS", "/usr/local/share:/usr/share").split(":"):
+        if not raw:
+            continue
+        p = Path(raw) / "applications"
+        if p.is_dir() and p not in seen:
+            dirs.append(p)
+            seen.add(p)
+    if home.is_dir() and home not in seen:
+        dirs.insert(0, home)
+    return dirs
+
+
+def parse_desktop(path: Path) -> dict[str, str] | None:
+    data: dict[str, str] = {}
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    in_entry = False
+    for line in text.splitlines():
+        if line.startswith("[") and line.endswith("]"):
+            in_entry = line.strip() == "[Desktop Entry]"
+            continue
+        if not in_entry or not line or line.startswith("#") or "=" not in line:
+            continue
+        key, val = line.split("=", 1)
+        if "[" in key:
+            continue
+        data.setdefault(key, val)
+    if data.get("Type", "Application") != "Application":
+        return None
+    if data.get("NoDisplay", "").lower() == "true":
+        return None
+    if data.get("Hidden", "").lower() == "true":
+        return None
+    only = data.get("OnlyShowIn", "")
+    current = {x for x in os.environ.get("XDG_CURRENT_DESKTOP", "").split(":") if x}
+    if only and current and not current.intersection(only.split(";")):
+        return None
+    not_show = data.get("NotShowIn", "")
+    if not_show and current.intersection(not_show.split(";")):
+        return None
+    if not data.get("Name") or not data.get("Exec"):
+        return None
+    data["_path"] = str(path)
+    data["_id"] = path.name
+    data["_cats"] = {c for c in data.get("Categories", "").split(";") if c}
+    keywords = data.get("Keywords", "").replace(";", " ")
+    try:
+        exec_bin = shlex.split(data["Exec"])[0]
+    except ValueError:
+        exec_bin = data["Exec"].split()[0] if data.get("Exec") else ""
+    data["_meta"] = " ".join(
+        x
+        for x in (
+            data["Name"],
+            data.get("GenericName", ""),
+            keywords,
+            data.get("Comment", ""),
+            Path(exec_bin).name if exec_bin else "",
+            path.stem,
+        )
+        if x
+    )
+    return data
+
+
+def load_apps() -> list[dict[str, str]]:
+    apps: dict[str, dict[str, str]] = {}
+    seen: set[str] = set()
+    for d in desktop_dirs():
+        for p in sorted(d.glob("*.desktop")):
+            if p.name in seen:
+                continue
+            seen.add(p.name)
+            parsed = parse_desktop(p)
+            if parsed:
+                apps[parsed["_id"]] = parsed
+    return sorted(apps.values(), key=lambda a: a["Name"].casefold())
+
+
+def in_group(app: dict[str, str], tokens: tuple[str, ...]) -> bool:
+    return bool(app["_cats"].intersection(tokens))
+
+
+def others(apps: list[dict[str, str]]) -> list[dict[str, str]]:
+    return [a for a in apps if not a["_cats"].intersection(KNOWN)]
+
+
+def apps_for_mode(apps: list[dict[str, str]], mode: str) -> list[dict[str, str]]:
+    if mode in ("", "all"):
+        return apps
+    if mode == "other":
+        return others(apps)
+    for mid, _label, tokens in GROUPS:
+        if mid == mode:
+            return [a for a in apps if in_group(a, tokens)]
+    return apps
+
+
+def emit_app(app: dict[str, str]) -> None:
+    emit_row(
+        app["Name"],
+        info=f"app:{app['_path']}",
+        icon=app.get("Icon") or "application-x-executable",
+        meta=app.get("_meta"),
+    )
+
+
+def list_apps(apps: list[dict[str, str]], mode: str) -> None:
+    emit_header(mode)
+    if not apps:
+        emit_row("No programs", info="empty", icon="applications-other", nonselectable=True)
+        return
+    for app in apps:
+        emit_app(app)
+
+
+def split_exec(exec_line: str) -> list[str]:
+    cleaned = FIELD_CODES.sub(" ", exec_line).replace("%%", "%").strip()
+    try:
+        return shlex.split(cleaned)
+    except ValueError:
+        return [cleaned]
+
+
+def launch(desktop_path: str) -> None:
+    path = Path(desktop_path)
+    app = parse_desktop(path)
+    home = str(Path.home())
+    kw = dict(
+        start_new_session=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        cwd=(app.get("Path") or home) if app else home,
+        env=os.environ.copy(),
+    )
+    cmd: list[str] = []
+    if app:
+        cmd = split_exec(app["Exec"])
+        if cmd and app.get("Terminal", "").lower() == "true":
+            term = shutil.which("alacritty") or shutil.which("xterm")
+            if term:
+                cmd = [term, "-e", *cmd]
+    if cmd:
+        try:
+            subprocess.Popen(cmd, **kw)
+            return
+        except OSError:
+            pass
+    gtk = shutil.which("gtk-launch")
+    if gtk:
+        subprocess.Popen([gtk, path.name], **kw)
+        return
+    gio = shutil.which("gio")
+    if gio:
+        subprocess.Popen([gio, "launch", str(path)], **kw)
+
+
+def match_apps(apps: list[dict[str, str]], query: str) -> list[dict[str, str]]:
+    q = query.casefold().strip()
+    if not q:
+        return []
+    exact = [a for a in apps if a["Name"].casefold() == q]
+    if exact:
+        return exact
+    return [a for a in apps if q in f"{a['Name']} {a.get('_meta', '')}".casefold()]
+
+
+def modi_spec() -> str:
+    """Comma-separated rofi -modi spec for populated categories."""
+    apps = load_apps()
+    base = "/usr/share/AvalonOS/rofi-modes"
+    parts = [f"All:{base}/all"]
+    for mid, label, tokens in GROUPS:
+        if any(in_group(a, tokens) for a in apps):
+            # Mode name is the tab label; keep it comma-free.
+            parts.append(f"{label}:{base}/{mid}")
+    if others(apps):
+        parts.append(f"Other:{base}/other")
+    return ",".join(parts)
+
+
+def mode_from_argv() -> tuple[str, str]:
+    """Wrapper passes: rofi-grouped <mode> [selected-row-text]."""
+    mode = "all"
+    selected = ""
+    if len(sys.argv) > 1 and sys.argv[1] in MODE_IDS:
+        mode = sys.argv[1]
+        selected = sys.argv[2] if len(sys.argv) > 2 else ""
+    elif len(sys.argv) > 1:
+        selected = sys.argv[1]
+        base = Path(sys.argv[0]).name
+        if base in MODE_IDS:
+            mode = base
+    return mode, selected
+
+
+def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "--modi":
+        sys.stdout.write(modi_spec() + "\n")
+        return
+    mode, selected = mode_from_argv()
+    apps = load_apps()
+    shown = apps_for_mode(apps, mode)
+    retv = os.environ.get("ROFI_RETV", "0")
+    info = os.environ.get("ROFI_INFO", "")
+
+    if retv == "0":
+        list_apps(shown, mode)
+        return
+
+    if retv == "1":
+        if info in ("", "empty"):
+            list_apps(shown, mode)
+            return
+        if info.startswith("app:"):
+            launch(info[4:])
+            return
+        named = [a for a in shown if a["Name"] == selected]
+        if len(named) == 1:
+            launch(named[0]["_path"])
+            return
+        if named:
+            list_apps(named, mode)
+            return
+        list_apps(shown, mode)
+        return
+
+    if retv == "2" and selected:
+        hits = match_apps(shown, selected)
+        if len(hits) == 1:
+            launch(hits[0]["_path"])
+            return
+        if hits:
+            list_apps(hits, mode)
+            return
+
+    list_apps(shown, mode)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    finally:
+        sys.stdout.flush()

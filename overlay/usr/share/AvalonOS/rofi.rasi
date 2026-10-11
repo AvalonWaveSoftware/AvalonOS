@@ -1,0 +1,2 @@
+/* Shim: canonical theme is /usr/share/rofi/themes/AvalonOS.rasi */
+@import "/usr/share/rofi/themes/AvalonOS.rasi"

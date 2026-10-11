@@ -1,0 +1,203 @@
+// AvalonOS /etc/niri/config.kdl — distro default (ADR 0002, 0016)
+// Do not set DISPLAY; niri + xwayland-satellite own it (ADR 0001).
+
+input {
+    keyboard {
+        xkb {
+            layout "us"
+        }
+    }
+    touchpad {
+        tap
+        natural-scroll
+    }
+}
+
+layout {
+    gaps 16
+    struts {
+        left 8
+        right 8
+        top 8
+        bottom 8
+    }
+    center-focused-column "never"
+    preset-column-widths {
+        proportion 0.33333
+        proportion 0.5
+        proportion 0.66667
+    }
+    default-column-width { proportion 0.5; }
+    // i3 stacking: one window visible; others are tabs on the focused window.
+    default-column-display "tabbed"
+    tab-indicator {
+        hide-when-single-tab
+        place-within-column
+        gap 4
+        width 4
+        length total-proportion=1.0
+        position "top"
+        gaps-between-tabs 4
+        corner-radius 6
+        active-color "#39FF14"
+        inactive-color "#1A3A5C"
+        urgent-color "#C2185B"
+    }
+    focus-ring {
+        width 2
+        active-color "#39FF14"
+        inactive-color "#1A3A5C"
+    }
+    border {
+        off
+    }
+    background-color "transparent"
+}
+
+spawn-sh-at-startup "swaybg -m fill -i /usr/share/AvalonOS/wallpaper.png"
+spawn-sh-at-startup "waybar"
+spawn-sh-at-startup "dunst"
+spawn-sh-at-startup "lxpolkit"
+spawn-sh-at-startup "swayidle -w timeout 300 'swaylock -f -c 0A1628' before-sleep 'swaylock -f -c 0A1628'"
+
+environment {
+    XDG_CURRENT_DESKTOP "niri"
+    EDITOR "nvim"
+    VISUAL "nvim"
+    QT_QPA_PLATFORMTHEME "qt6ct"
+    QT_STYLE_OVERRIDE "Breeze"
+}
+
+binds {
+    // i3-like (stock i3: j/k/l/; focus, Shift moves, Return term, Shift+q kill)
+    Mod+Shift+Slash { show-hotkey-overlay; }
+    Mod+Return hotkey-overlay-title="Terminal" { spawn "alacritty"; }
+    Mod+D hotkey-overlay-title="Launcher" { spawn "avalonos-launcher"; }
+    Mod+Shift+Q { close-window; }
+    Mod+Shift+C hotkey-overlay-title="Reload config" { spawn-sh "niri msg action load-config-file"; }
+    Mod+Shift+E { quit; }
+    Mod+Shift+X hotkey-overlay-title="Lock" { spawn "swaylock" "-f" "-c" "0A1628"; }
+    Print hotkey-overlay-title="Screenshot" { spawn-sh "grim - | tee $HOME/Pictures/screenshot-$(date +%Y%m%d-%H%M%S).png | wl-copy"; }
+    Mod+Print { spawn-sh "grim -g \"$(slurp)\" - | tee $HOME/Pictures/screenshot-$(date +%Y%m%d-%H%M%S).png | wl-copy"; }
+
+    Mod+Left  { focus-column-left; }
+    Mod+Down  { focus-window-down; }
+    Mod+Up    { focus-window-up; }
+    Mod+Right { focus-column-right; }
+    Mod+J { focus-column-left; }
+    Mod+K { focus-window-down; }
+    Mod+L { focus-window-up; }
+    Mod+semicolon { focus-column-right; }
+
+    Mod+Shift+Left  { move-column-left; }
+    Mod+Shift+Down  { move-window-down; }
+    Mod+Shift+Up    { move-window-up; }
+    Mod+Shift+Right { move-column-right; }
+    Mod+Shift+J { move-column-left; }
+    Mod+Shift+K { move-window-down; }
+    Mod+Shift+L { move-window-up; }
+    Mod+Shift+semicolon { move-column-right; }
+
+    Mod+Home { focus-column-first; }
+    Mod+End  { focus-column-last; }
+    Mod+Shift+Home { move-column-to-first; }
+    Mod+Shift+End  { move-column-to-last; }
+
+    Mod+WheelScrollDown      cooldown-ms=150 { focus-column-right; }
+    Mod+WheelScrollUp        cooldown-ms=150 { focus-column-left; }
+    Mod+Shift+WheelScrollDown cooldown-ms=150 { focus-window-down; }
+    Mod+Shift+WheelScrollUp   cooldown-ms=150 { focus-window-up; }
+
+    Mod+1 { focus-workspace 1; }
+    Mod+2 { focus-workspace 2; }
+    Mod+3 { focus-workspace 3; }
+    Mod+4 { focus-workspace 4; }
+    Mod+5 { focus-workspace 5; }
+    Mod+6 { focus-workspace 6; }
+    Mod+7 { focus-workspace 7; }
+    Mod+8 { focus-workspace 8; }
+    Mod+9 { focus-workspace 9; }
+    Mod+0 { focus-workspace 10; }
+    Mod+Shift+1 { move-column-to-workspace 1; }
+    Mod+Shift+2 { move-column-to-workspace 2; }
+    Mod+Shift+3 { move-column-to-workspace 3; }
+    Mod+Shift+4 { move-column-to-workspace 4; }
+    Mod+Shift+5 { move-column-to-workspace 5; }
+    Mod+Shift+6 { move-column-to-workspace 6; }
+    Mod+Shift+7 { move-column-to-workspace 7; }
+    Mod+Shift+8 { move-column-to-workspace 8; }
+    Mod+Shift+9 { move-column-to-workspace 9; }
+    Mod+Shift+0 { move-column-to-workspace 10; }
+
+    // Plain: i3 stacking (tabbed, one visible). Shift: column consume (all visible).
+    // Super+H still expels to a new column (side by side).
+    Mod+H { expel-window-from-column; }
+    Mod+V hotkey-overlay-title="Stack window to the right" { spawn "/usr/share/AvalonOS/niri-stack" "consume"; }
+    Mod+Comma hotkey-overlay-title="Stack window to the right" { spawn "/usr/share/AvalonOS/niri-stack" "consume"; }
+    Mod+Period hotkey-overlay-title="Expel a window from the stack" { expel-window-from-column; }
+    Mod+S hotkey-overlay-title="Stack all windows in workspace" { spawn "/usr/share/AvalonOS/niri-stack" "consume-all"; }
+    Mod+W hotkey-overlay-title="Expel all windows in a stack" { spawn "/usr/share/AvalonOS/niri-stack" "expel-all"; }
+    Mod+Shift+V hotkey-overlay-title="Consume into column" { spawn "/usr/share/AvalonOS/niri-stack" "consume-column"; }
+    Mod+Shift+Comma hotkey-overlay-title="Consume into column" { spawn "/usr/share/AvalonOS/niri-stack" "consume-column"; }
+    Mod+Shift+Period hotkey-overlay-title="Expel from column" { expel-window-from-column; }
+    Mod+Shift+S hotkey-overlay-title="Consume all into column" { spawn "/usr/share/AvalonOS/niri-stack" "consume-all-column"; }
+    Mod+Shift+W hotkey-overlay-title="Expel all from column" { spawn "/usr/share/AvalonOS/niri-stack" "expel-all"; }
+    Mod+F { fullscreen-window; }
+    Mod+Shift+F { maximize-column; }
+    Mod+Shift+Space { toggle-window-floating; }
+    Mod+Space { switch-focus-between-floating-and-tiling; }
+    Mod+R { switch-preset-column-width; }
+    Mod+Minus { set-column-width "-10%"; }
+    Mod+Equal { set-column-width "+10%"; }
+
+    XF86AudioRaiseVolume allow-when-locked=true { spawn-sh "wpctl set-volume @DEFAULT_AUDIO_SINK@ 0.05+"; }
+    XF86AudioLowerVolume allow-when-locked=true { spawn-sh "wpctl set-volume @DEFAULT_AUDIO_SINK@ 0.05-"; }
+    XF86AudioMute        allow-when-locked=true { spawn-sh "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"; }
+    XF86MonBrightnessUp   allow-when-locked=true { spawn "brightnessctl" "set" "5%+"; }
+    XF86MonBrightnessDown allow-when-locked=true { spawn "brightnessctl" "set" "5%-"; }
+}
+
+layer-rule {
+    match namespace="^wallpaper$"
+    place-within-backdrop true
+}
+
+window-rule {
+    match app-id="Alacritty"
+    default-column-width { proportion 0.5; }
+    clip-to-geometry true
+    geometry-corner-radius 0
+    draw-border-with-background false
+}
+
+window-rule {
+    match app-id="^AvalonOS-hw$"
+    open-floating true
+    default-column-width { fixed 420; }
+    default-window-height { fixed 320; }
+    default-floating-position x=12 y=8 relative-to="top-right"
+}
+
+window-rule {
+    match app-id="^AvalonOS-btop$"
+    open-floating true
+    default-column-width { fixed 900; }
+    default-window-height { fixed 560; }
+    default-floating-position x=12 y=8 relative-to="top-right"
+}
+
+window-rule {
+    match app-id="^AvalonOS-net$"
+    open-floating true
+    default-column-width { fixed 320; }
+    default-window-height { fixed 340; }
+    default-floating-position x=12 y=8 relative-to="top-right"
+}
+
+window-rule {
+    match app-id="pavucontrol-qt"
+    open-floating true
+    default-column-width { fixed 700; }
+    default-window-height { fixed 480; }
+    default-floating-position x=12 y=8 relative-to="top-right"
+}

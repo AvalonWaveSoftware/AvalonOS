@@ -1,0 +1,191 @@
+/**
+ * ROFI Color Theme
+ *
+ * AvalonOS — navy / neon / purple-red (ADR 0016).
+ * Left: search + categories. Right: programs for the active category
+ * (or all programs, filtered by the search box).
+ *
+ * User: AvalonOS
+ */
+
+* {
+    bg:               #0A1628;
+    bg-alt:           #102445;
+    bg-panel:         #0D1E38;
+    fg:               #D4FFD4;
+    neon:             #39FF14;
+    accent:           #C2185B;
+    accent-dim:       #8B1450;
+    idle:             #1A3A5C;
+    background-color: transparent;
+    text-color:       @fg;
+    font:             "Noto Sans 12";
+}
+
+window {
+    /* Top-center, just under floating waybar (margin-top 6 + height 42 + 2). */
+    location:         north;
+    anchor:           north;
+    x-offset:         0px;
+    y-offset:         50px;
+    width:            52em;
+    height:           28em;
+    border:           2px;
+    border-color:     @neon;
+    border-radius:    18px;
+    background-color: @bg;
+    padding:          14px;
+    children:         [ mainbox ];
+}
+
+mainbox {
+    orientation:      horizontal;
+    spacing:          12px;
+    background-color: transparent;
+    children:         [ nav, dropdown-panel ];
+}
+
+/* Left: search + category buttons */
+nav {
+    orientation:      vertical;
+    expand:           false;
+    width:            16em;
+    spacing:          10px;
+    padding:          14px;
+    background-color: @bg-alt;
+    border:           1px;
+    border-color:     @idle;
+    border-radius:    14px;
+    children:         [ inputbar, mode-switcher ];
+}
+
+inputbar {
+    orientation:      vertical;
+    expand:           false;
+    spacing:          8px;
+    padding:          0;
+    background-color: transparent;
+    children:         [ textbox-search-label, entry ];
+}
+
+textbox-search-label {
+    expand:           false;
+    content:          "search";
+    text-color:       @neon;
+    font:             "Noto Sans Bold 11";
+    horizontal-align: 0.0;
+    padding:          0 0 2px 0;
+}
+
+prompt {
+    enabled:          false;
+}
+
+entry {
+    padding:          10px 12px;
+    background-color: @bg;
+    text-color:       @fg;
+    placeholder:      "search programs";
+    placeholder-color: @idle;
+    border:           1px;
+    border-color:     @neon;
+    border-radius:    10px;
+}
+
+mode-switcher {
+    orientation:      vertical;
+    enabled:          true;
+    expand:           true;
+    spacing:          6px;
+    padding:          4px 0 0 0;
+    background-color: transparent;
+}
+
+button {
+    padding:          8px 12px;
+    background-color: @bg-panel;
+    text-color:       @fg;
+    border:           1px;
+    border-color:     @idle;
+    border-radius:    10px;
+    horizontal-align: 0.0;
+    vertical-align:   0.5;
+    font:             "Noto Sans 12";
+}
+
+button selected,
+button selected.normal,
+button selected.active,
+button selected.urgent,
+button selected.alternate {
+    background-color: @neon;
+    text-color:       @bg;
+    border-color:     @neon;
+}
+
+/* Right: programs */
+dropdown-panel {
+    orientation:      vertical;
+    expand:           true;
+    spacing:          8px;
+    padding:          12px;
+    background-color: @bg-alt;
+    border:           1px;
+    border-color:     @idle;
+    border-radius:    14px;
+    children:         [ listview ];
+}
+
+listview {
+    enabled:          true;
+    lines:            12;
+    dynamic:          true;
+    cycle:            true;
+    scrollbar:        false;
+    spacing:          8px;
+    background-color: transparent;
+    padding:          2px;
+}
+
+element {
+    orientation:      horizontal;
+    padding:          10px 12px;
+    spacing:          12px;
+    background-color: @bg-panel;
+    text-color:       @fg;
+    border:           1px;
+    border-color:     @idle;
+    border-radius:    10px;
+}
+
+element selected {
+    background-color: @accent-dim;
+    text-color:       @fg;
+    border-color:     @accent;
+}
+
+element-icon {
+    size:             1.6em;
+    background-color: inherit;
+}
+
+element-text {
+    background-color: inherit;
+    text-color:       inherit;
+    vertical-align:   0.5;
+}
+
+message {
+    padding:          10px;
+    background-color: @bg-alt;
+    border-radius:    10px;
+    border:           1px;
+    border-color:     @accent;
+}
+
+error-message {
+    padding:          10px;
+    background-color: @bg;
+    text-color:       @accent;
+    border-radius:    10px;
+}

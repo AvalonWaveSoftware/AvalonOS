@@ -1,0 +1,8 @@
+/* AvalonOS palette — source of truth (ADR 0016) */
+@define-color avalonos-bg #0A1628;
+@define-color avalonos-bg-alt #102445;
+@define-color avalonos-border-idle #1A3A5C;
+@define-color avalonos-fg #D4FFD4;
+@define-color avalonos-neon #39FF14;
+@define-color avalonos-accent #C2185B;
+@define-color avalonos-accent-dim #8B1450;

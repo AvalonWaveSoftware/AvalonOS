@@ -1,0 +1,5 @@
+# NVIDIA TU104 USB 3.1 (01:00.2) and Type-C UCSI (01:00.3) resume on every
+# graphical login and print red xhci errors on the greeter VT. They are not
+# used by AvalonOS (Intel eDP). Drop them at bind time.
+ACTION=="add", SUBSYSTEM=="pci", ATTR{vendor}=="0x10de", ATTR{device}=="0x1ad8", RUN+="/bin/sh -c 'echo 1 > /sys/bus/pci/devices/%k/remove'"
+ACTION=="add", SUBSYSTEM=="pci", ATTR{vendor}=="0x10de", ATTR{device}=="0x1ad9", RUN+="/bin/sh -c 'echo 1 > /sys/bus/pci/devices/%k/remove'"

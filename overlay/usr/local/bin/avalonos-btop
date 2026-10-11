@@ -1,0 +1,17 @@
+#!/bin/sh
+# Toggle themed btop in a floating Alacritty (app-id AvalonOS-btop).
+set -e
+pidfile="${XDG_RUNTIME_DIR:-/tmp}/avalonos-btop.pid"
+if [ -f "$pidfile" ]; then
+    pid=$(cat "$pidfile" 2>/dev/null || true)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null || true
+        rm -f "$pidfile"
+        exit 0
+    fi
+    rm -f "$pidfile"
+fi
+alacritty --class AvalonOS-btop -e btop \
+    -c /usr/share/AvalonOS/btop.conf \
+    --themes-dir /usr/share/AvalonOS/btop-themes >/dev/null 2>&1 &
+echo $! >"$pidfile"

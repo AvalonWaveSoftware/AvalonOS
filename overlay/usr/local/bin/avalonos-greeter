@@ -1,0 +1,17 @@
+#!/bin/sh
+# AvalonOS TUI greeter. stdout must stay on the VT.
+# Palette 0=navy 10=neon 5=accent 15=fg after avalonos-console-setup.
+exec /usr/bin/tuigreet \
+    --time \
+    --time-format '%a %b %d   %H:%M' \
+    --remember \
+    --remember-session \
+    --asterisks \
+    --greeting 'AvalonOS' \
+    --greet-align center \
+    --sessions /usr/share/AvalonOS/wayland-sessions \
+    --width 72 \
+    --window-padding 2 \
+    --container-padding 2 \
+    --prompt-padding 1 \
+    --theme 'container=black;border=lightgreen;title=lightgreen;greet=lightgreen;time=lightcyan;text=white;prompt=green;input=white;action=magenta;button=lightgreen'

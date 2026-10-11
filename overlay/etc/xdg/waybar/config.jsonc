@@ -1,0 +1,88 @@
+{
+    "layer": "top",
+    "position": "top",
+    "height": 42,
+    "margin-top": 6,
+    "margin-left": 8,
+    "margin-right": 8,
+    "spacing": 6,
+    "modules-left": ["niri/workspaces", "niri/window"],
+    "modules-center": ["clock"],
+    "modules-right": [
+        "mpris",
+        "custom/hw",
+        "custom/btop",
+        "custom/brightness",
+        "pulseaudio",
+        "custom/net",
+        "battery",
+        "tray"
+    ],
+    "niri/workspaces": {
+        "format": "{index}",
+        "disable-click": false
+    },
+    "niri/window": {
+        "format": "{}",
+        "max-length": 48,
+        "separate-outputs": true
+    },
+    "clock": {
+        "format": "{:%a %b %d  %H:%M}",
+        "tooltip-format": "{:%A %d %B %Y}"
+    },
+    "mpris": {
+        "format": "{player_icon} {title}",
+        "format-paused": "{status_icon} {title}",
+        "max-length": 28,
+        "player-icons": { "default": "" },
+        "status-icons": { "paused": "", "playing": "" }
+    },
+    "custom/hw": {
+        "format": "",
+        "tooltip-format": "hardware stats",
+        "on-click": "/usr/share/AvalonOS/hw-stats"
+    },
+    "custom/btop": {
+        "format": "",
+        "tooltip-format": "btop",
+        "on-click": "/usr/local/bin/avalonos-btop"
+    },
+    "custom/net": {
+        "format": "",
+        "tooltip-format": "network",
+        "on-click": "/usr/share/AvalonOS/net-menu"
+    },
+    "custom/brightness": {
+        "format": " {}%",
+        "exec": "brightnessctl -m | awk -F, '{gsub(/%/,\"\",$4); print $4}'",
+        "interval": 1,
+        "tooltip": true,
+        "tooltip-format": "brightness",
+        "reverse-scrolling": true,
+        "on-scroll-up": "brightnessctl set 5%+",
+        "on-scroll-down": "brightnessctl set 5%-"
+    },
+    "pulseaudio": {
+        "format": "{icon} {volume}%",
+        "format-muted": " mute",
+        "format-icons": { "default": ["", "", ""] },
+        "on-click": "pavucontrol-qt",
+        "on-click-right": "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle",
+        "reverse-scrolling": true,
+        "reverse-mouse-scrolling": true,
+        "on-scroll-up": "wpctl set-volume @DEFAULT_AUDIO_SINK@ 0.05+",
+        "on-scroll-down": "wpctl set-volume @DEFAULT_AUDIO_SINK@ 0.05-"
+    },
+    "battery": {
+        "format": "{icon} {capacity}%",
+        "format-charging": " {capacity}%",
+        "format-plugged": " {capacity}%",
+        "format-icons": ["", "", "", "", ""],
+        "states": { "warning": 20, "critical": 10 },
+        "tooltip": true
+    },
+    "tray": {
+        "spacing": 8
+    }
+}

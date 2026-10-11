@@ -1,0 +1,6 @@
+# Byte-exact payloads: no EOL or encoding conversion anywhere.
+* -text
+*.so binary
+*.png binary
+*.xpi binary
+*.gpg binary

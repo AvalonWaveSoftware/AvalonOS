@@ -1,0 +1,11 @@
+[General]
+ColorScheme=AvalonOS
+
+[KDE]
+widgetStyle=Breeze
+
+[Icons]
+Theme=Candy
+
+[UiSettings]
+ColorScheme=AvalonOS

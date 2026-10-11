@@ -1,0 +1,22 @@
+#!/bin/sh
+# Root helper: AvalonOS colors + 32px font on the greeter VT (tty1).
+set -e
+VT=/dev/tty1
+if [ -e "$VT" ]; then
+    setfont ter-v32n -C "$VT" 2>/dev/null \
+        || setfont latarcyrheb-sun32 -C "$VT" 2>/dev/null \
+        || true
+    python3 - "$VT" <<'PY' 2>/dev/null || true
+import fcntl, os, sys
+KDSETMODE, KD_TEXT = 0x4B3A, 0x00
+fd = os.open(sys.argv[1], os.O_RDWR)
+try:
+    fcntl.ioctl(fd, KDSETMODE, KD_TEXT)
+finally:
+    os.close(fd)
+PY
+fi
+if [ -r /usr/share/AvalonOS/vconsole.palette ]; then
+    setvtrgb /usr/share/AvalonOS/vconsole.palette 2>/dev/null || true
+fi
+exit 0

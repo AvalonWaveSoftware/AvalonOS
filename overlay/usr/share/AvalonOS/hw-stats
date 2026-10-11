@@ -1,0 +1,240 @@
+#!/usr/bin/python3
+"""AvalonOS glance HW popup — GTK3, navy/neon, singleton."""
+import os
+import signal
+import sys
+from pathlib import Path
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk, GLib, Gtk  # noqa: E402
+
+APP_ID = "AvalonOS-hw"
+PIDFILE = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "avalonos-hw.pid"
+BG, FG, NEON, ACCENT, IDLE = "#0A1628", "#D4FFD4", "#39FF14", "#C2185B", "#1A3A5C"
+
+CSS = f"""
+window {{ background: {BG}; }}
+label {{ color: {FG}; font-family: "JetBrains Mono"; font-size: 12px; }}
+label.title {{ color: {NEON}; font-weight: bold; font-size: 13px; }}
+label.warn {{ color: {ACCENT}; }}
+label.dim {{ color: {IDLE}; }}
+"""
+
+
+def already_running() -> bool:
+    if not PIDFILE.exists():
+        return False
+    try:
+        pid = int(PIDFILE.read_text().strip())
+        os.kill(pid, 0)
+        os.kill(pid, signal.SIGTERM)
+        PIDFILE.unlink(missing_ok=True)
+        return True
+    except (ValueError, ProcessLookupError, PermissionError, OSError):
+        PIDFILE.unlink(missing_ok=True)
+        return False
+
+
+def cpu_pct() -> float:
+    def snap():
+        with open("/proc/stat") as f:
+            p = f.readline().split()
+        vals = list(map(int, p[1:]))
+        idle = vals[3] + (vals[4] if len(vals) > 4 else 0)
+        return idle, sum(vals)
+
+    i1, t1 = snap()
+    GLib.usleep(120000)
+    i2, t2 = snap()
+    dt, di = t2 - t1, i2 - i1
+    if dt <= 0:
+        return 0.0
+    return 100.0 * (1.0 - di / dt)
+
+
+def mem_info():
+    info = {}
+    with open("/proc/meminfo") as f:
+        for line in f:
+            k, v, *_ = line.split()
+            info[k.rstrip(":")] = int(v)
+    total, avail = info["MemTotal"], info["MemAvailable"]
+    used = total - avail
+    swap_t, swap_f = info.get("SwapTotal", 0), info.get("SwapFree", 0)
+    swap_u = max(0, swap_t - swap_f)
+    return total, used, swap_t, swap_u
+
+
+def loadavg():
+    with open("/proc/loadavg") as f:
+        a, b, c, *_ = f.read().split()
+    return a, b, c
+
+
+def disk_root():
+    st = os.statvfs("/")
+    total = st.f_frsize * st.f_blocks
+    free = st.f_frsize * st.f_bavail
+    return total, total - free
+
+
+def cpu_temp():
+    base = Path("/sys/class/thermal")
+    if not base.exists():
+        return None
+    best = None
+    for z in sorted(base.glob("thermal_zone*")):
+        t = z / "temp"
+        typ = z / "type"
+        if not t.exists():
+            continue
+        try:
+            mill = int(t.read_text().strip())
+        except ValueError:
+            continue
+        if mill < 1000:
+            continue
+        c = mill / 1000.0
+        kind = typ.read_text().strip() if typ.exists() else ""
+        if "pkg" in kind.lower() or "x86" in kind.lower() or best is None:
+            best = c
+    return best
+
+
+def uptime():
+    with open("/proc/uptime") as f:
+        secs = float(f.read().split()[0])
+    h = int(secs // 3600)
+    m = int((secs % 3600) // 60)
+    return f"{h}h {m:02d}m"
+
+
+def fmt_bytes(kib):
+    mb = kib / 1024
+    if mb > 1024:
+        return f"{mb / 1024:.1f}G"
+    return f"{mb:.0f}M"
+
+
+def gather():
+    cpu = cpu_pct()
+    l1, l5, l15 = loadavg()
+    tot, used, st, su = mem_info()
+    dtot, dused = disk_root()
+    temp = cpu_temp()
+    return {
+        "cpu": cpu,
+        "load": f"{l1}  {l5}  {l15}",
+        "mem": f"{fmt_bytes(used)} / {fmt_bytes(tot)}",
+        "mem_pct": 100.0 * used / tot if tot else 0,
+        "swap": f"{fmt_bytes(su)} / {fmt_bytes(st)}" if st else "none",
+        "disk": f"{dused / 1e9:.1f}G / {dtot / 1e9:.1f}G",
+        "temp": None if temp is None else f"{temp:.0f}°C",
+        "temp_n": temp,
+        "up": uptime(),
+    }
+
+
+class HwWin(Gtk.Window):
+    def __init__(self):
+        super().__init__(title="AvalonOS hardware")
+        self.set_default_size(420, 320)
+        self.set_decorated(False)
+        self.set_keep_above(True)
+        self.set_name("avalonos-hw")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box.set_margin_top(14)
+        box.set_margin_bottom(14)
+        box.set_margin_start(16)
+        box.set_margin_end(16)
+        self.add(box)
+        title = Gtk.Label(label="hardware")
+        title.get_style_context().add_class("title")
+        title.set_xalign(0)
+        box.pack_start(title, False, False, 4)
+        self.rows = {}
+        for key, label in (
+            ("cpu", "cpu"),
+            ("load", "load"),
+            ("mem", "memory"),
+            ("swap", "swap"),
+            ("disk", "disk /"),
+            ("temp", "temp"),
+            ("up", "uptime"),
+        ):
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+            k = Gtk.Label(label=label)
+            k.set_xalign(0)
+            k.set_width_chars(10)
+            k.get_style_context().add_class("dim")
+            v = Gtk.Label(label="—")
+            v.set_xalign(1)
+            row.pack_start(k, True, True, 0)
+            row.pack_start(v, True, True, 0)
+            box.pack_start(row, False, False, 2)
+            self.rows[key] = v
+        self.connect("key-press-event", self.on_key)
+        self.refresh()
+        GLib.timeout_add(1500, self.refresh)
+
+    def on_key(self, _w, ev):
+        if ev.keyval == 65307:  # Escape
+            Gtk.main_quit()
+            return True
+        return False
+
+    def refresh(self):
+        d = gather()
+        mapping = {
+            "cpu": f"{d['cpu']:.0f}%",
+            "load": d["load"],
+            "mem": d["mem"],
+            "swap": d["swap"],
+            "disk": d["disk"],
+            "temp": d["temp"] or "n/a",
+            "up": d["up"],
+        }
+        warn = {
+            "cpu": d["cpu"] >= 90,
+            "mem": d["mem_pct"] >= 90,
+            "temp": (d["temp_n"] or 0) >= 85,
+        }
+        for k, text in mapping.items():
+            lab = self.rows[k]
+            lab.set_text(text)
+            ctx = lab.get_style_context()
+            if warn.get(k):
+                ctx.add_class("warn")
+            else:
+                ctx.remove_class("warn")
+        return True
+
+
+def main():
+    if already_running():
+        sys.exit(0)
+    GLib.set_prgname(APP_ID)
+    PIDFILE.write_text(str(os.getpid()))
+    css = Gtk.CssProvider()
+    css.load_from_data(CSS.encode())
+    screen = Gdk.Screen.get_default()
+    if screen is not None:
+        Gtk.StyleContext.add_provider_for_screen(
+            screen,
+            css,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+        )
+    win = HwWin()
+    win.connect("destroy", Gtk.main_quit)
+    win.show_all()
+    try:
+        Gtk.main()
+    finally:
+        PIDFILE.unlink(missing_ok=True)
+
+
+if __name__ == "__main__":
+    main()

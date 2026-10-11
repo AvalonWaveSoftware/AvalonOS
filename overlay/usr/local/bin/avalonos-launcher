@@ -1,0 +1,10 @@
+#!/bin/sh
+# Left column: search + category tabs. Right column: programs.
+# Default tab is All, so the search box fuzzy-filters every program.
+modi="$(/usr/share/AvalonOS/rofi-grouped --modi)"
+exec rofi -show All \
+    -modi "$modi" \
+    -show-icons \
+    -matching fuzzy \
+    -i \
+    -sidebar-mode

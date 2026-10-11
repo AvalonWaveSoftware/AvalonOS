@@ -1,0 +1,62 @@
+#!/bin/sh
+# AvalonOS session: greetd → niri.service with a working user bus.
+set -e
+export XDG_CURRENT_DESKTOP="${XDG_CURRENT_DESKTOP:-niri}"
+export XDG_SESSION_TYPE="${XDG_SESSION_TYPE:-wayland}"
+
+uid="$(id -u)"
+if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
+    export XDG_RUNTIME_DIR="/run/user/${uid}"
+fi
+if [ ! -d "$XDG_RUNTIME_DIR" ]; then
+    mkdir -m 700 -p "$XDG_RUNTIME_DIR" 2>/dev/null || true
+fi
+if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && [ -S "${XDG_RUNTIME_DIR}/bus" ]; then
+    export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+fi
+
+# greetd already opened a PAM session and set XDG_VTNR/SEAT. A login-shell
+# re-exec can drop those and leave niri importing the wrong DRM node.
+if [ -z "${XDG_VTNR:-}" ]; then
+    if [ -n "$SHELL" ] && grep -qx "$SHELL" /etc/shells \
+        && ! echo "$SHELL" | grep -Eq 'false|nologin'; then
+        if [ "${1:-}" != "-l" ]; then
+            exec bash -c "exec -l '$SHELL' -c 'exec \"$0\" -l $*'"
+        fi
+        shift
+    fi
+fi
+
+if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
+    export XDG_RUNTIME_DIR="/run/user/${uid}"
+fi
+if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && [ -S "${XDG_RUNTIME_DIR}/bus" ]; then
+    export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+fi
+
+if ! systemctl --user show-environment >/dev/null 2>&1; then
+    echo "AvalonOS: no systemd --user bus (XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR)." >&2
+    echo "Log in from the greeter on VT1 (Ctrl+Alt+F1), not from a raw TTY/SSH shell." >&2
+    exit 1
+fi
+
+if systemctl --user -q is-active niri.service; then
+    echo 'A niri session is already running.' >&2
+    exit 1
+fi
+
+systemctl --user reset-failed >/dev/null 2>&1 || true
+systemctl --user import-environment \
+    XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XDG_SESSION_ID XDG_SEAT XDG_VTNR \
+    XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS HOME USER LOGNAME SHELL PATH \
+    >/dev/null 2>&1 || true
+if command -v dbus-update-activation-environment >/dev/null 2>&1; then
+    dbus-update-activation-environment --systemd \
+        XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XDG_RUNTIME_DIR XDG_VTNR XDG_SEAT \
+        XDG_SESSION_ID DBUS_SESSION_BUS_ADDRESS HOME USER \
+        >/dev/null 2>&1 || true
+fi
+
+systemctl --user --wait start niri.service
+systemctl --user start --job-mode=replace-irreversibly niri-shutdown.target >/dev/null 2>&1 || true
+systemctl --user unset-environment WAYLAND_DISPLAY DISPLAY XDG_SESSION_TYPE XDG_CURRENT_DESKTOP NIRI_SOCKET >/dev/null 2>&1 || true

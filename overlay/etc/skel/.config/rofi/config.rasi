@@ -1,0 +1,14 @@
+configuration {
+    show-icons: true;
+    icon-theme: "Candy";
+    font: "Noto Sans 12";
+    matching: "fuzzy";
+    case-sensitive: false;
+    sidebar-mode: true;
+    hover-select: false;
+    me-select-entry: "";
+    me-accept-entry: "MousePrimary";
+    kb-accept-entry: "Return,KP_Enter,Control+j,Control+m";
+}
+
+@theme "AvalonOS"

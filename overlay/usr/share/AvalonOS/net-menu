@@ -1,0 +1,554 @@
+#!/usr/bin/python3
+"""AvalonOS network dropdown — actions plus a Wi-Fi picker."""
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import threading
+from pathlib import Path
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk, GLib, Gtk, Pango  # noqa: E402
+
+APP_ID = "AvalonOS-net"
+PIDFILE = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "avalonos-net.pid"
+BG, FG, NEON, ACCENT, ALT, IDLE = (
+    "#0A1628",
+    "#D4FFD4",
+    "#39FF14",
+    "#C2185B",
+    "#102445",
+    "#7AA88A",
+)
+
+CSS = f"""
+window {{ background: {BG}; }}
+button {{
+  background: {ALT};
+  color: {FG};
+  border: 1px solid {NEON};
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-family: "JetBrains Mono";
+  font-size: 12px;
+}}
+button:hover {{ background: {ACCENT}; color: {FG}; }}
+button.ap {{ padding: 6px 10px; }}
+button.ap:hover {{ background: {ACCENT}; }}
+label.title {{ color: {NEON}; font-weight: bold; font-family: "JetBrains Mono"; }}
+label.dim {{ color: {IDLE}; font-family: "JetBrains Mono"; font-size: 11px; }}
+label.err {{ color: {ACCENT}; font-family: "JetBrains Mono"; font-size: 11px; }}
+label.ssid {{ color: {FG}; font-family: "JetBrains Mono"; font-size: 12px; }}
+label.ssid.on {{ color: {NEON}; }}
+entry {{
+  background: {ALT};
+  color: {FG};
+  border: 1px solid {NEON};
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-family: "JetBrains Mono";
+  caret-color: {NEON};
+}}
+scrolledwindow {{ background: {BG}; }}
+"""
+
+HOME_SIZE = (320, 340)
+WIFI_SIZE = (320, 420)
+
+
+def already_running() -> bool:
+    if not PIDFILE.exists():
+        return False
+    try:
+        pid = int(PIDFILE.read_text().strip())
+        os.kill(pid, 0)
+        os.kill(pid, signal.SIGTERM)
+        PIDFILE.unlink(missing_ok=True)
+        return True
+    except (ValueError, ProcessLookupError, PermissionError, OSError):
+        PIDFILE.unlink(missing_ok=True)
+        return False
+
+
+def run(*cmd, capture=False, timeout=30):
+    try:
+        r = subprocess.run(
+            cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if capture:
+            return (r.stdout or "").strip()
+        return r.returncode
+    except FileNotFoundError:
+        return "" if capture else 1
+    except subprocess.TimeoutExpired:
+        return "" if capture else 1
+
+
+def nmcli_fields(line: str) -> list[str]:
+    parts: list[str] = []
+    buf: list[str] = []
+    esc = False
+    for ch in line:
+        if esc:
+            buf.append(ch)
+            esc = False
+        elif ch == "\\":
+            esc = True
+        elif ch == ":":
+            parts.append("".join(buf))
+            buf = []
+        else:
+            buf.append(ch)
+    parts.append("".join(buf))
+    return parts
+
+
+def wifi_on() -> bool:
+    return run("nmcli", "-t", "radio", "wifi", capture=True) == "enabled"
+
+
+def wifi_device() -> str:
+    out = run("nmcli", "-t", "-f", "DEVICE,TYPE,STATE", "device", "status", capture=True)
+    for line in out.splitlines():
+        parts = nmcli_fields(line)
+        if len(parts) >= 2 and parts[1] == "wifi":
+            return parts[0]
+    return ""
+
+
+def ipv4() -> str:
+    out = run("nmcli", "-t", "-f", "IP4.ADDRESS", "device", "show", capture=True)
+    for line in out.splitlines():
+        if line.startswith("IP4.ADDRESS") and "/" in line:
+            return line.split(":", 1)[-1].split("/")[0]
+    return ""
+
+
+def spawn(*cmd):
+    subprocess.Popen(cmd, start_new_session=True)
+
+
+def saved_wifi() -> set[str]:
+    out = run("nmcli", "-t", "-f", "NAME,TYPE", "connection", "show", capture=True)
+    names: set[str] = set()
+    for line in out.splitlines():
+        parts = nmcli_fields(line)
+        if len(parts) >= 2 and parts[1] == "802-11-wireless":
+            names.add(parts[0])
+    return names
+
+
+def is_open(security: str) -> bool:
+    return security.strip() in ("", "--", "none", "None")
+
+
+def list_aps() -> list[dict]:
+    out = run(
+        "nmcli",
+        "-t",
+        "-f",
+        "IN-USE,SSID,SECURITY,SIGNAL",
+        "device",
+        "wifi",
+        "list",
+        "--rescan",
+        "yes",
+        capture=True,
+        timeout=20,
+    )
+    by_ssid: dict[str, dict] = {}
+    for line in out.splitlines():
+        parts = nmcli_fields(line)
+        if len(parts) < 4:
+            continue
+        in_use, ssid, security, signal = parts[0], parts[1], parts[2], parts[3]
+        if not ssid:
+            continue
+        try:
+            sig = int(signal)
+        except ValueError:
+            sig = 0
+        row = {
+            "ssid": ssid,
+            "security": security,
+            "signal": sig,
+            "in_use": in_use == "*",
+            "open": is_open(security),
+        }
+        prev = by_ssid.get(ssid)
+        if prev is None or row["in_use"] or row["signal"] > prev["signal"]:
+            by_ssid[ssid] = row
+    aps = list(by_ssid.values())
+    aps.sort(key=lambda a: (not a["in_use"], -a["signal"], a["ssid"].lower()))
+    return aps
+
+
+def connect_wifi(ssid: str, password: str | None = None) -> tuple[bool, str]:
+    saved = saved_wifi()
+    if password is None and ssid in saved:
+        r = subprocess.run(
+            ["nmcli", "-w", "25", "connection", "up", "id", ssid],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if r.returncode == 0:
+            return True, ""
+    cmd = ["nmcli", "-w", "25", "device", "wifi", "connect", ssid]
+    if password is not None:
+        cmd.extend(["password", password])
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    err = (r.stderr or r.stdout or "").strip()
+    if r.returncode == 0:
+        return True, ""
+    return False, err or "could not connect"
+
+
+def needs_secrets(err: str) -> bool:
+    low = err.lower()
+    return any(
+        s in low
+        for s in (
+            "secrets",
+            "password",
+            "802-11-wireless-security",
+            "no secrets",
+            "authentication",
+        )
+    )
+
+
+def in_thread(work, done):
+    def wrap():
+        try:
+            result = work()
+            err = None
+        except Exception as exc:  # noqa: BLE001 — surface to UI
+            result, err = None, exc
+        GLib.idle_add(lambda: (done(result, err), False)[1])
+
+    threading.Thread(target=wrap, daemon=True).start()
+
+
+class NetWin(Gtk.Window):
+    def __init__(self):
+        super().__init__(title="AvalonOS network")
+        self.set_default_size(*HOME_SIZE)
+        self.set_decorated(False)
+        self.set_keep_above(True)
+        self._busy = False
+        self._pass_ssid = ""
+
+        self.stack = Gtk.Stack()
+        self.stack.set_transition_type(Gtk.StackTransitionType.NONE)
+        self.add(self.stack)
+        self.stack.add_named(self._home_page(), "home")
+        self.stack.add_named(self._wifi_page(), "wifi")
+        self.stack.add_named(self._pass_page(), "pass")
+        self.connect("key-press-event", self.on_key)
+
+    def _home_page(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.set_margin_top(12)
+        box.set_margin_bottom(12)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+        title = Gtk.Label(label="network")
+        title.get_style_context().add_class("title")
+        title.set_xalign(0)
+        box.pack_start(title, False, False, 4)
+        actions = [
+            ("Edit connections", self.edit),
+            ("Bluetooth", self.bluetooth),
+            ("Wifi", self.open_wifi),
+            ("Copy IPv4", self.copy_ip),
+            ("nmtui", self.nmtui),
+            ("Disconnect", self.disconnect),
+        ]
+        for label, fn in actions:
+            b = Gtk.Button(label=label)
+            b.connect("clicked", lambda _w, f=fn: f())
+            box.pack_start(b, False, False, 0)
+        return box
+
+    def _wifi_page(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.set_margin_top(12)
+        box.set_margin_bottom(12)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+        head = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        back = Gtk.Button(label="←")
+        back.connect("clicked", lambda *_: self.go_home())
+        title = Gtk.Label(label="wifi")
+        title.get_style_context().add_class("title")
+        title.set_xalign(0)
+        head.pack_start(back, False, False, 0)
+        head.pack_start(title, True, True, 0)
+        box.pack_start(head, False, False, 0)
+        self.wifi_status = Gtk.Label(label="")
+        self.wifi_status.set_xalign(0)
+        self.wifi_status.set_line_wrap(True)
+        self.wifi_status.get_style_context().add_class("dim")
+        box.pack_start(self.wifi_status, False, False, 0)
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_vexpand(True)
+        self.ap_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        scroll.add(self.ap_box)
+        box.pack_start(scroll, True, True, 0)
+        refresh = Gtk.Button(label="Refresh")
+        refresh.connect("clicked", lambda *_: self.scan_wifi())
+        box.pack_start(refresh, False, False, 0)
+        return box
+
+    def _pass_page(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.set_margin_top(12)
+        box.set_margin_bottom(12)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+        head = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        back = Gtk.Button(label="←")
+        back.connect("clicked", lambda *_: self.stack.set_visible_child_name("wifi"))
+        self.pass_title = Gtk.Label(label="password")
+        self.pass_title.get_style_context().add_class("title")
+        self.pass_title.set_xalign(0)
+        self.pass_title.set_ellipsize(Pango.EllipsizeMode.END)
+        head.pack_start(back, False, False, 0)
+        head.pack_start(self.pass_title, True, True, 0)
+        box.pack_start(head, False, False, 0)
+        self.pw_entry = Gtk.Entry()
+        self.pw_entry.set_visibility(False)
+        self.pw_entry.set_placeholder_text("password")
+        self.pw_entry.connect("activate", lambda *_: self.submit_password())
+        box.pack_start(self.pw_entry, False, False, 0)
+        self.pass_status = Gtk.Label(label="")
+        self.pass_status.set_xalign(0)
+        self.pass_status.set_line_wrap(True)
+        self.pass_status.get_style_context().add_class("dim")
+        box.pack_start(self.pass_status, False, False, 0)
+        go = Gtk.Button(label="Connect")
+        go.connect("clicked", lambda *_: self.submit_password())
+        box.pack_start(go, False, False, 0)
+        return box
+
+    def on_key(self, _w, ev):
+        if ev.keyval != 65307:
+            return False
+        page = self.stack.get_visible_child_name()
+        if page == "pass":
+            self.stack.set_visible_child_name("wifi")
+            return True
+        if page == "wifi":
+            self.go_home()
+            return True
+        Gtk.main_quit()
+        return True
+
+    def go_home(self):
+        self.resize(*HOME_SIZE)
+        self.stack.set_visible_child_name("home")
+
+    def set_status(self, label: Gtk.Label, text: str, error: bool = False):
+        ctx = label.get_style_context()
+        ctx.remove_class("dim")
+        ctx.remove_class("err")
+        ctx.add_class("err" if error else "dim")
+        label.set_text(text)
+
+    def open_wifi(self):
+        self.resize(*WIFI_SIZE)
+        self.stack.set_visible_child_name("wifi")
+        self.scan_wifi()
+
+    def scan_wifi(self):
+        if self._busy:
+            return
+        if not wifi_device():
+            self.set_status(self.wifi_status, "no wifi adapter", error=True)
+            self._fill_aps([])
+            return
+        self._busy = True
+        self.set_status(self.wifi_status, "scanning…")
+        self._fill_aps([])
+
+        def work():
+            if not wifi_on():
+                run("nmcli", "radio", "wifi", "on")
+            aps = list_aps()
+            if not aps:
+                aps = list_aps()
+            return aps
+
+        def done(aps, err):
+            self._busy = False
+            if err is not None:
+                self.set_status(self.wifi_status, str(err), error=True)
+                return
+            n = len(aps or [])
+            if n == 0:
+                self.set_status(self.wifi_status, "no networks found")
+            else:
+                self.set_status(self.wifi_status, f"{n} network{'s' if n != 1 else ''}")
+            self._fill_aps(aps or [])
+
+        in_thread(work, done)
+
+    def _fill_aps(self, aps: list[dict]):
+        for child in list(self.ap_box.get_children()):
+            self.ap_box.remove(child)
+        for ap in aps:
+            self.ap_box.pack_start(self._ap_button(ap), False, False, 0)
+        self.ap_box.show_all()
+
+    def _ap_button(self, ap: dict) -> Gtk.Button:
+        btn = Gtk.Button()
+        btn.get_style_context().add_class("ap")
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        name = Gtk.Label(label=ap["ssid"])
+        name.set_xalign(0)
+        name.set_ellipsize(Pango.EllipsizeMode.END)
+        name.get_style_context().add_class("ssid")
+        if ap["in_use"]:
+            name.get_style_context().add_class("on")
+        meta_bits = [f"{ap['signal']}%"]
+        if not ap["open"]:
+            meta_bits.append("lock")
+        if ap["in_use"]:
+            meta_bits.append("on")
+        meta = Gtk.Label(label="  ".join(meta_bits))
+        meta.set_xalign(1)
+        meta.get_style_context().add_class("dim")
+        row.pack_start(name, True, True, 0)
+        row.pack_start(meta, False, False, 0)
+        btn.add(row)
+        btn.connect("clicked", lambda _w, a=ap: self.pick_ap(a))
+        return btn
+
+    def pick_ap(self, ap: dict):
+        if self._busy:
+            return
+        if ap["in_use"]:
+            self.set_status(self.wifi_status, f"already on {ap['ssid']}")
+            return
+        if ap["open"] or ap["ssid"] in saved_wifi():
+            self._connect(ap["ssid"], None)
+            return
+        self._show_password(ap["ssid"])
+
+    def _show_password(self, ssid: str, err: str = ""):
+        self._pass_ssid = ssid
+        self.pass_title.set_text(ssid)
+        self.pw_entry.set_text("")
+        self.set_status(self.pass_status, err or "password required", error=bool(err))
+        self.stack.set_visible_child_name("pass")
+        self.pw_entry.grab_focus()
+
+    def submit_password(self):
+        ssid = self._pass_ssid
+        pw = self.pw_entry.get_text()
+        if not ssid:
+            return
+        if not pw:
+            self.set_status(self.pass_status, "password required", error=True)
+            return
+        self._connect(ssid, pw)
+
+    def _connect(self, ssid: str, password: str | None):
+        if self._busy:
+            return
+        self._busy = True
+        page = self.stack.get_visible_child_name()
+        if page == "pass":
+            self.set_status(self.pass_status, "connecting…")
+        else:
+            self.set_status(self.wifi_status, f"connecting to {ssid}…")
+
+        def work():
+            return connect_wifi(ssid, password)
+
+        def done(result, err):
+            self._busy = False
+            if err is not None:
+                self._fail_connect(ssid, str(err), password)
+                return
+            ok, msg = result
+            if ok:
+                Gtk.main_quit()
+                return
+            self._fail_connect(ssid, msg, password)
+
+        in_thread(work, done)
+
+    def _fail_connect(self, ssid: str, msg: str, password: str | None):
+        if password is None and needs_secrets(msg):
+            self._show_password(ssid, "password required")
+            return
+        if self.stack.get_visible_child_name() == "pass":
+            self.set_status(self.pass_status, msg, error=True)
+        else:
+            self.set_status(self.wifi_status, msg, error=True)
+
+    def edit(self):
+        spawn("nm-connection-editor")
+        Gtk.main_quit()
+
+    def bluetooth(self):
+        spawn("blueman-manager")
+        Gtk.main_quit()
+
+    def copy_ip(self):
+        ip = ipv4()
+        if ip and shutil.which("wl-copy"):
+            subprocess.run(["wl-copy"], input=ip, text=True, check=False)
+        Gtk.main_quit()
+
+    def nmtui(self):
+        spawn("alacritty", "--class", "AvalonOS-nmtui", "-e", "nmtui")
+        Gtk.main_quit()
+
+    def disconnect(self):
+        out = run("nmcli", "-t", "-f", "DEVICE,TYPE,STATE", "device", capture=True)
+        for line in out.splitlines():
+            parts = nmcli_fields(line)
+            dev, typ, state = (parts + ["", "", ""])[:3]
+            if state == "connected" and typ in ("wifi", "ethernet"):
+                run("nmcli", "device", "disconnect", dev)
+                break
+        Gtk.main_quit()
+
+
+def main():
+    if already_running():
+        sys.exit(0)
+    GLib.set_prgname(APP_ID)
+    PIDFILE.write_text(str(os.getpid()))
+    css = Gtk.CssProvider()
+    css.load_from_data(CSS.encode())
+    screen = Gdk.Screen.get_default()
+    if screen is not None:
+        Gtk.StyleContext.add_provider_for_screen(
+            screen,
+            css,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+        )
+    win = NetWin()
+    win.connect("destroy", Gtk.main_quit)
+    win.show_all()
+    try:
+        Gtk.main()
+    finally:
+        PIDFILE.unlink(missing_ok=True)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,78 @@
+@import url("/usr/share/AvalonOS/palette.css");
+
+* {
+    font-family: "JetBrains Mono", "Font Awesome 6 Free", "Font Awesome 6 Free Solid", sans-serif;
+    font-size: 13px;
+    border: none;
+    border-radius: 0;
+    min-height: 0;
+}
+
+window#waybar {
+    background: transparent;
+    color: @avalonos-fg;
+}
+
+window#waybar > box {
+    background: @avalonos-bg;
+    border: 1px solid @avalonos-neon;
+    border-radius: 14px;
+    padding: 0 4px;
+}
+
+#workspaces,
+#window,
+#clock,
+#mpris,
+#custom-hw,
+#custom-btop,
+#custom-net,
+#custom-brightness,
+#backlight,
+#pulseaudio,
+#battery,
+#tray {
+    background: @avalonos-bg-alt;
+    color: @avalonos-fg;
+    border-radius: 8px;
+    padding: 0 12px;
+    margin: 6px 3px;
+}
+
+#workspaces {
+    padding: 0 4px;
+}
+
+#workspaces button {
+    color: @avalonos-fg;
+    padding: 0 8px;
+    background: transparent;
+    border-radius: 6px;
+}
+
+#workspaces button.active {
+    color: @avalonos-bg;
+    background: @avalonos-neon;
+}
+
+#workspaces button.urgent {
+    background: @avalonos-accent;
+    color: @avalonos-fg;
+}
+
+#clock {
+    color: @avalonos-neon;
+}
+
+#battery.warning,
+#battery.critical,
+#network.disconnected,
+#pulseaudio.muted {
+    color: @avalonos-accent;
+}
+
+#custom-hw,
+#custom-btop,
+#custom-net {
+    min-width: 1.4em;
+}

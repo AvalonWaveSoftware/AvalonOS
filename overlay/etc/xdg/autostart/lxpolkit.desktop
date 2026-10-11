@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=LXPolKit
+Exec=lxpolkit
+Hidden=true
+X-GNOME-Autostart-enabled=false
+NoDisplay=true
+OnlyShowIn=LXDE;
