@@ -12,5 +12,6 @@ Snapshotted into `overlay/usr/share/AvalonOS/nvim/pack/avalon/start/`
 | nvim-tree.lua | b2aadda |
 | nvim-web-devicons | 5f032a8 |
 
-Treesitter parsers (`.so`) in `nvim/parsers/parser/`: lua vim vimdoc query
+Treesitter parsers (`.so`, prebuilt x86_64 binaries committed as shipped) in
+`nvim/parsers/parser/`: lua vim vimdoc query
 python bash json markdown markdown_inline c cpp.

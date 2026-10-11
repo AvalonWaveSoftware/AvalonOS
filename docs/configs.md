@@ -1,9 +1,11 @@
 # Overlay map
 
-`overlay/` in `/root/AvalonOS` is the source of truth.
+`overlay/` in the repository is the source of truth.
 `scripts/apply-overlay.sh` copies files onto the live root (no SELinux
 xattrs, then `restorecon`). `scripts/make-golden-tarball.sh` packs the
-same tree as `packaging/avalonos-overlay.tar` for the ISO.
+same tree as `packaging/avalonos-overlay.tar` for the ISO, using
+`packaging/overlay.manifest` for member order, modes and mtimes. After
+adding or removing overlay files run `scripts/update-overlay-manifest.sh`.
 
 | Overlay path | Why |
 |---|---|
