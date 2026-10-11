@@ -1,0 +1,38 @@
+--- a/EFI/BOOT/grub.cfg
++++ b/EFI/BOOT/grub.cfg
+@@ -1,4 +1,4 @@
+-set default="1"
++set default="0"
+ 
+ function load_video {
+   insmod efi_gop
+@@ -14,23 +14,23 @@
+ insmod part_gpt
+ insmod ext2
+ 
+-set timeout=60
++set timeout=15
+ ### END /etc/grub.d/00_header ###
+ 
+ search --no-floppy --set=root -l 'Fedora-E-dvd-x86_64-44'
+ 
+ ### BEGIN /etc/grub.d/10_linux ###
+-menuentry 'Install Fedora 44' --class fedora --class gnu-linux --class gnu --class os {
+-	linux /images/pxeboot/vmlinuz inst.stage2=hd:LABEL=Fedora-E-dvd-x86_64-44 quiet
++menuentry 'Install AvalonOS (Fedora 44)' --class fedora --class gnu-linux --class gnu --class os {
++	linux /images/pxeboot/vmlinuz inst.stage2=hd:LABEL=Fedora-E-dvd-x86_64-44 quiet inst.ks=hd:LABEL=Fedora-E-dvd-x86_64-44:/ks.cfg
+ 	initrd /images/pxeboot/initrd.img
+ }
+ menuentry 'Test this media & install Fedora 44' --class fedora --class gnu-linux --class gnu --class os {
+-	linux /images/pxeboot/vmlinuz inst.stage2=hd:LABEL=Fedora-E-dvd-x86_64-44 rd.live.check quiet
++	linux /images/pxeboot/vmlinuz inst.stage2=hd:LABEL=Fedora-E-dvd-x86_64-44 rd.live.check quiet inst.ks=hd:LABEL=Fedora-E-dvd-x86_64-44:/ks.cfg
+ 	initrd /images/pxeboot/initrd.img
+ }
+ submenu 'Troubleshooting -->' {
+-	menuentry 'Install Fedora 44 in basic graphics mode' --class fedora --class gnu-linux --class gnu --class os {
+-		linux /images/pxeboot/vmlinuz inst.stage2=hd:LABEL=Fedora-E-dvd-x86_64-44 nomodeset quiet
++	menuentry 'Install AvalonOS (Fedora 44) in basic graphics mode' --class fedora --class gnu-linux --class gnu --class os {
++		linux /images/pxeboot/vmlinuz inst.stage2=hd:LABEL=Fedora-E-dvd-x86_64-44 nomodeset quiet inst.ks=hd:LABEL=Fedora-E-dvd-x86_64-44:/ks.cfg
+ 		initrd /images/pxeboot/initrd.img
+ 	}
+ 	menuentry 'Rescue a Fedora system' --class fedora --class gnu-linux --class gnu --class os {

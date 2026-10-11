@@ -1,0 +1,13 @@
+# Build inputs/outputs: never commit images
+/cache/
+/build/
+/out/
+*.iso
+*.iso.sha256
+*.img
+*.part
+# Generated tarballs
+/packaging/*.tar
+# Rendered kickstarts carry a password hash (ADR 0017)
+/kickstart/*.local.ks
+ks.cfg

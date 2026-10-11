@@ -63,6 +63,8 @@ plasma-breeze
 candy-icon-theme
 gtk3
 python3-gobject
+systemd-pam
+dbus-broker
 
 # Fonts
 google-noto-sans-fonts
