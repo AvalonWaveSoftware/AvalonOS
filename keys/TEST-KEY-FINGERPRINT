@@ -1,0 +1,9 @@
+# AvalonOS TEST build signing key (Code Security P-L11; Master Chief
+# 2026-11-14 16:15 CT: "Yes, use a separate signing key for test builds.").
+# Trusted ONLY by AVALONOS_TEST_BUILD=1 outputs (-TEST ISO, test RPMs, test
+# kickstart). Never in PINNED-FINGERPRINTS; validate.sh and verify-iso.sh fail
+# any release that carries this key or a package signed with it.
+# Generated 2026-11-14 on the build machine (fedora,
+# /home/admin/avalonos-test-signing, own GNUPGHOME and passphrase file); only
+# the public half is in this repo (keys/RPM-GPG-KEY-avalonos-test). No expiry.
+F2BC6934FB6501B6114177A7E221DD18AE8EAAE9  AvalonOS TEST Build Signing Key (TEST ONLY - never trusted by releases) <rpm-signing-test@avalonwavesoftware.com>  /etc/pki/rpm-gpg/RPM-GPG-KEY-avalonos-test

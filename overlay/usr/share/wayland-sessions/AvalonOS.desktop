@@ -1,6 +1,6 @@
 [Desktop Entry]
 Name=AvalonOS
 Comment=Minimal niri session (AvalonOS)
-Exec=/usr/local/bin/avalonos-session
+Exec=/usr/bin/avalonos-session
 Type=Application
 DesktopNames=niri

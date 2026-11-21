@@ -1,0 +1,4 @@
+# AvalonOS: first-boot user creation runs before greetd (avalonos-firstboot).
+enable avalonos-firstboot-user.service
+# AvalonOS: root-owned GPU probe for niri (kms_swrast only without 3D).
+enable avalonos-gpu-select.service

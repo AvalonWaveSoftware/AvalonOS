@@ -61,7 +61,6 @@ d	0755	1789225956	./etc/environment.d
 f	0644	1788749848	./etc/environment.d/60-avalonos-qt.conf
 d	0755	1789225956	./etc/firefox
 d	0755	1789225956	./etc/firefox/pref
-f	0644	1788749848	./etc/firefox/pref/avalonos.js
 d	0755	1789225956	./etc/skel
 d	0755	1789225956	./etc/skel/.config
 d	0755	1789225956	./etc/skel/.config/qt6ct
@@ -2999,7 +2998,6 @@ f	0644	1788747447	./usr/share/AvalonOS/wallpaper.png
 f	0644	1788749496	./usr/share/AvalonOS/vconsole.palette
 d	0755	1789225973	./usr/share/AvalonOS/firefox
 f	0644	1788749848	./usr/share/AvalonOS/firefox/manifest.json
-f	0644	1788749900	./usr/share/AvalonOS/firefox/avalonos.xpi
 d	0755	1789225973	./usr/share/AvalonOS/rofi-modes
 f	0755	1788800073	./usr/share/AvalonOS/rofi-modes/all
 f	0755	1788800073	./usr/share/AvalonOS/rofi-modes/internet

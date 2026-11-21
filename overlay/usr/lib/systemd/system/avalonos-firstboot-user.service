@@ -1,0 +1,34 @@
+[Unit]
+Description=AvalonOS first-boot user setup
+DefaultDependencies=no
+After=local-fs.target systemd-user-sessions.service NetworkManager.service network-online.target
+Wants=network-online.target
+Before=greetd.service display-manager.service
+Conflicts=plymouth-quit-wait.service
+ConditionPathExists=!/var/lib/avalonos/user-ready
+# Restarts on failure (crash, tty gone): at most 10 starts per 10 minutes.
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=-/usr/bin/plymouth quit
+ExecStartPre=-/usr/bin/avalonos-console-setup
+ExecStart=/usr/bin/avalonos-make-user
+Environment=TERM=linux
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=no
+TimeoutStartSec=infinity
+# Ctrl-C/Ctrl-D are handled in avalonos-make-user; anything else that makes it
+# fail brings the user screen back instead of leaving tty1 dead.
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical.target

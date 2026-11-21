@@ -1,0 +1,35 @@
+# rpmlint filters for the AvalonOS packages (rpmlint -r avalonos.rpmlintrc).
+# Every filter has a reason; anything not listed here must be fixed instead.
+
+# Proper nouns, product and file names, not misspellings.
+addFilter(r"spelling-error .*'(niri|greetd|tuigreet|rofi|waybar|btop|Neovim|lua|treesitter|vimdoc|kickstart|json|cpp|yescrypt|testseed|tailwhip|swrast|simpledrm|plaintext|nvidia|kms|iwd|wpa|gpu|drm|conf|akmod|pre)'")
+# Bundled plugin licence texts are installed twice on purpose: in the plugin
+# tree (Neovim and the plugins expect them there) and under %license.
+addFilter(r"files-duplicate /usr/share/licenses/avalonos-nvim/")
+# Several grammars share the same upstream licence text.
+addFilter(r"files-duplicate /usr/share/licenses/avalonos-nvim-parsers/")
+# A skeleton dotfile directory is the point of /etc/skel.
+addFilter(r"hidden-file-or-dir /etc/skel/\.config")
+# Masking a user unit with a /dev/null symlink is how systemd masks units.
+addFilter(r"dangling-symlink /etc/systemd/user/xdg-desktop-autostart\.target /dev/null")
+# udev rules and systemd units live under /usr/lib by design.
+addFilter(r"only-non-binary-in-usr-lib")
+# Source0 is generated from the AvalonOS tree by scripts/build-rpms.sh; there
+# is no public release tarball URL yet.
+addFilter(r"invalid-url Source0: avalonos-")
+# %systemd_postun has no body for units not restarted on upgrade (oneshot
+# first-boot / boot-time probe); kept for packaging-guideline form.
+addFilter(r"empty-%postun")
+# Config-only subpackages and the meta-package have no docs of their own
+# (avalonos-docs carries them, helper scripts included).
+addFilter(r"no-documentation")
+addFilter(r"no-manual-page-for-binary")
+# Package-signing public keys live in /etc/pki/rpm-gpg and are not
+# configuration (Fedora's own key packages do the same); upgrades must replace them.
+addFilter(r"non-conffile-in-etc /etc/pki/rpm-gpg/RPM-GPG-KEY-avalonos(-test)?$")
+# avalonos-nvim-lsp ships upstream's prebuilt, sha256-pinned binaries
+# unmodified (Code Security P-M2); they cannot be rebuilt as PIE here.
+addFilter(r"avalonos-nvim-lsp\.x86_64: W: position-independent-executable-suggested")
+# marksman (.NET) dlopen()s whichever libicu major is installed; there is no
+# ELF NEEDED entry to turn into a soname dependency (QA 0.1.0-5 partial).
+addFilter(r"avalonos-nvim-lsp\.x86_64: E: explicit-lib-dependency libicu$")

@@ -1,0 +1,194 @@
+#!/usr/bin/python3
+"""Pick niri's GL path for this boot (AvalonOS, decision 2026-11-14 9:41 CT).
+
+Prints shell-style env lines for niri.service's EnvironmentFile:
+  - nothing, when the primary DRM device has a hardware GL driver;
+  - MESA_LOADER_DRIVER_OVERRIDE=kms_swrast, when it has no 3D (virtio-gpu
+    without virgl, bochs/std VGA, QXL, vmwgfx without 3D, hyperv_drm,
+    simpledrm ...). kms_swrast ships in mesa-dri-drivers: no extra package.
+
+Probe: GBM + EGL (GLES2, surfaceless) on the primary render node, the same
+path niri uses. No/failed context or a llvmpipe/softpipe renderer =>
+software. A probe that hangs is treated as hardware, so a real GPU is never
+forced onto software rendering. Kernel cmdline override: avalonos.gpu=hw|sw.
+
+Display-only adapters (QA 2026-11-14, std VGA FAIL): bochs-drm (QEMU -vga
+std), simpledrm, cirrus, hyperv_drm, ast/mgag200 BMCs ... have a card node
+but no render node. Mesa's EGL only accepts render-capable DRM devices
+(display-only PCI devices get no EGL device) and niri 26.04 refuses software
+EGL devices, so niri starts with no output: a blank screen, kms_swrast or
+not. Hence:
+  - primary display-only, another KMS GPU with a render node present: niri
+    renders there (render-drm-device in /run/avalonos/niri-gpu.kdl, included
+    by /etc/niri/config.kdl) and the display-only output imports its buffers;
+  - no render-capable GPU at all: AVALONOS_DISPLAY_ONLY=1, and
+    avalonos-session explains it on the console instead of a blank screen.
+/run/avalonos/niri-gpu.kdl is always written (comment-only when niri's own
+choice is fine), so the optional include never warns.
+"""
+from __future__ import annotations
+
+import ctypes
+import glob
+import os
+import sys
+
+SW = "MESA_LOADER_DRIVER_OVERRIDE=kms_swrast"
+DISPLAY_ONLY = "AVALONOS_DISPLAY_ONLY=1"
+SYSFS = os.environ.get("AVALONOS_TEST_SYSFS", "/sys")  # offline tests only
+RUN_DIR = os.environ.get("AVALONOS_TEST_RUNDIR", "/run/avalonos")
+SOFT_RENDERERS = ("llvmpipe", "softpipe", "swrast", "lavapipe", "software rasterizer")
+
+
+def cmdline_choice() -> str | None:
+    try:
+        with open("/proc/cmdline", encoding="ascii", errors="replace") as fh:
+            for tok in fh.read().split():
+                if tok in ("avalonos.gpu=hw", "avalonos.gpu=sw"):
+                    return tok.split("=", 1)[1]
+    except OSError:
+        pass
+    return None
+
+
+def drm_cards() -> list[dict]:
+    """DRM card devices, boot VGA first: name, driver, render node, KMS."""
+    out = []
+    for c in sorted(glob.glob(os.path.join(SYSFS, "class/drm/card[0-9]*"))):
+        name = os.path.basename(c)
+        if "-" in name:  # connector entries (card0-VGA-1)
+            continue
+        try:
+            with open(os.path.join(c, "device", "boot_vga"), encoding="ascii") as fh:
+                boot_vga = int(fh.read().strip() or 0)
+        except (OSError, ValueError):
+            boot_vga = 0
+        render = sorted(glob.glob(os.path.join(c, "device", "drm", "renderD*")))
+        driver = os.path.basename(os.path.realpath(os.path.join(c, "device", "driver")))
+        out.append({
+            "card": name,
+            "driver": driver if os.path.exists(os.path.join(c, "device", "driver")) else "?",
+            "boot_vga": boot_vga,
+            "render": "/dev/dri/" + os.path.basename(render[0]) if render else None,
+            "kms": bool(glob.glob(os.path.join(SYSFS, "class/drm", name + "-*"))),
+        })
+    out.sort(key=lambda d: -d["boot_vga"])
+    return out
+
+
+def write_niri_gpu(render: str | None, why: str) -> None:
+    """Atomically write the niri include (comment-only when render is None)."""
+    text = f"// Written each boot by avalonos-gpu-select: {why}\n"
+    if render:
+        text += f'debug {{\n    render-drm-device "{render}"\n}}\n'
+    try:
+        os.makedirs(RUN_DIR, exist_ok=True)
+        tmp = os.path.join(RUN_DIR, ".niri-gpu.kdl.new")
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, os.path.join(RUN_DIR, "niri-gpu.kdl"))
+    except OSError as exc:
+        print(f"# could not write {RUN_DIR}/niri-gpu.kdl: {exc}")
+
+
+def probe(node: str) -> str | None:
+    """Return GL_RENDERER for node, or None if no GPU GL context could be made."""
+    gbm = ctypes.CDLL("libgbm.so.1")
+    egl = ctypes.CDLL("libEGL.so.1")
+    gbm.gbm_create_device.restype = ctypes.c_void_p
+    gbm.gbm_create_device.argtypes = [ctypes.c_int]
+    egl.eglGetPlatformDisplay.restype = ctypes.c_void_p
+    egl.eglGetPlatformDisplay.argtypes = [ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
+    egl.eglInitialize.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+    egl.eglBindAPI.argtypes = [ctypes.c_uint]
+    egl.eglCreateContext.restype = ctypes.c_void_p
+    egl.eglCreateContext.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+    egl.eglMakeCurrent.argtypes = [ctypes.c_void_p] * 4
+    egl.eglGetProcAddress.restype = ctypes.c_void_p
+    egl.eglGetProcAddress.argtypes = [ctypes.c_char_p]
+
+    fd = os.open(node, os.O_RDWR | os.O_CLOEXEC)
+    dev = gbm.gbm_create_device(fd)
+    if not dev:
+        return None
+    dpy = egl.eglGetPlatformDisplay(0x31D7, dev, None)  # EGL_PLATFORM_GBM_KHR
+    if not dpy or not egl.eglInitialize(dpy, None, None):
+        return None
+    if not egl.eglBindAPI(0x30A0):  # EGL_OPENGL_ES_API
+        return None
+    attrs = (ctypes.c_int * 3)(0x3098, 2, 0x3038)  # CLIENT_VERSION 2, NONE
+    ctx = egl.eglCreateContext(dpy, None, None, attrs)  # EGL_KHR_no_config_context
+    if not ctx or not egl.eglMakeCurrent(dpy, None, None, ctx):  # surfaceless
+        return None
+    addr = egl.eglGetProcAddress(b"glGetString")
+    if not addr:
+        return None
+    gl_get_string = ctypes.CFUNCTYPE(ctypes.c_char_p, ctypes.c_uint)(addr)
+    name = gl_get_string(0x1F01)  # GL_RENDERER
+    return name.decode(errors="replace") if name else None
+
+
+def check() -> int:
+    """`gpu-select --check` (avalonos-session, as the user; reads sysfs only,
+    writes nothing): live state at login, one word on stdout.
+      render        the primary renders itself (niri can start)
+      alt NODE      primary display-only, another KMS GPU renders on NODE
+      display-only  no render-capable KMS GPU: niri would show nothing"""
+    cards = drm_cards()
+    if cards and cards[0]["render"]:
+        print("render")
+        return 0
+    alt = next((c for c in cards[1:] if c["render"] and c["kms"]), None)
+    print(f"alt {alt['render']}" if alt else "display-only")
+    return 0
+
+
+def main() -> int:
+    if sys.argv[1:] == ["--check"]:
+        return check()
+    cards = drm_cards()
+    primary = cards[0] if cards else None
+    node = None
+    if primary and primary["render"]:
+        node = primary["render"]
+        write_niri_gpu(None, f"{primary['card']} ({primary['driver']}) renders itself")
+    elif primary:
+        alt = next((c for c in cards[1:] if c["render"] and c["kms"]), None)
+        if alt:
+            node = alt["render"]
+            print(f"# {primary['card']} ({primary['driver']}) is display-only; "
+                  f"niri renders on {node} ({alt['card']}, {alt['driver']})")
+            write_niri_gpu(node, f"{primary['card']} ({primary['driver']}) has no render node")
+        else:
+            write_niri_gpu(None, "no render-capable GPU")
+    else:
+        write_niri_gpu(None, "no DRM device")
+    if primary is None:
+        print("# no DRM device; niri cannot start (see avalonos-session message)")
+        print(DISPLAY_ONLY)
+        return 0
+    if node is None:
+        print(f"# /dev/dri/{primary['card']} ({primary['driver']}): display-only adapter, "
+              "no render-capable GPU; niri cannot draw on it")
+        print(DISPLAY_ONLY)
+        return 0
+    choice = cmdline_choice()
+    if choice:
+        print(SW if choice == "sw" else "# avalonos.gpu=hw")
+        return 0
+    try:
+        renderer = probe(node)
+    except OSError as exc:  # missing lib or node access: do not guess software
+        print(f"# probe error on {node}: {exc}; leaving Mesa defaults")
+        return 0
+    if renderer is None or renderer.lower().startswith(SOFT_RENDERERS):
+        print(f"# {node}: no hardware GL ({renderer or 'no context'}); using kms_swrast")
+        print(SW)
+    else:
+        print(f"# {node}: hardware GL: {renderer}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

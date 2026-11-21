@@ -55,8 +55,8 @@ layout {
 }
 
 spawn-sh-at-startup "swaybg -m fill -i /usr/share/AvalonOS/wallpaper.png"
-spawn-sh-at-startup "waybar"
-spawn-sh-at-startup "dunst"
+spawn-sh-at-startup "waybar -c /etc/xdg/avalonos/waybar/config.jsonc -s /etc/xdg/avalonos/waybar/style.css"
+spawn-sh-at-startup "dunst -config /etc/xdg/avalonos/dunst/dunstrc"
 spawn-sh-at-startup "lxpolkit"
 spawn-sh-at-startup "swayidle -w timeout 300 'swaylock -f -c 0A1628' before-sleep 'swaylock -f -c 0A1628'"
 
@@ -201,3 +201,8 @@ window-rule {
     default-window-height { fixed 480; }
     default-floating-position x=12 y=8 relative-to="top-right"
 }
+
+// Display-only primary adapter (no render node) + another KMS GPU: render
+// there. Written each boot by avalonos-gpu-select.service; comment-only when
+// niri's own GPU choice is fine. Optional includes need niri >= 26.04.
+include optional=true "/run/avalonos/niri-gpu.kdl"

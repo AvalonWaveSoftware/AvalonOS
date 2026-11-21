@@ -1,0 +1,14 @@
+# Package-signing keys AvalonOS installs trust (ARCH-13). The kickstart %post
+# refuses to continue unless the keys shipped by fedora-gpg-keys and
+# rpmfusion-*-release match these exactly, and every installed package is
+# signed by one of them. Verified 2026-11-14 against keys/fedora-44.gpg,
+# the rpmfusion-*-release-44-3 RPMs and https://rpmfusion.org/keys.
+# The AvalonOS key was generated 2026-11-14 on the build machine (fedora,
+# /home/admin/avalonos-signing); only its public half is in this repo.
+# Release builds pin exactly this set. QA test builds swap the AvalonOS key
+# for the separate TEST key (keys/TEST-KEY-FINGERPRINT, P-L11), which is
+# deliberately NOT listed here.
+36F612DCF27F7D1A48A835E4DBFCF71C6D9F90A6  Fedora (44) <fedora-44-primary@fedoraproject.org>          /etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-44-x86_64
+E9A491A3DE247814E7E067EAE06F8ECDD651FF2E  RPM Fusion free repository for Fedora (2020)       /etc/pki/rpm-gpg/RPM-GPG-KEY-rpmfusion-free-fedora-44
+79BDB88F9BBF73910FD4095B6A2AF96194843C65  RPM Fusion nonfree repository for Fedora (2020)    /etc/pki/rpm-gpg/RPM-GPG-KEY-rpmfusion-nonfree-fedora-44
+F0AA82E5FEB779364658A18D96508B1357FDAB48  AvalonOS RPM Signing Key <rpm-signing@avalonwavesoftware.com>  /etc/pki/rpm-gpg/RPM-GPG-KEY-avalonos  (keys/RPM-GPG-KEY-avalonos)

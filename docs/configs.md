@@ -19,7 +19,7 @@ adding or removing overlay files run `scripts/update-overlay-manifest.sh`.
 | `usr/local/bin/avalonos-greeter` | tuigreet + AvalonOS `--theme` |
 | `usr/local/bin/avalonos-console-setup` | Terminus 32px + VT palette before greetd |
 | `usr/share/AvalonOS/vconsole.palette` | setvtrgb 16-color map |
-| `etc/vconsole.conf` | `FONT=ter-v32n` |
+| `etc/vconsole.conf` | `FONT=ter-i32n` (CP437 glyph order; QA r6 FAIL 2) |
 | `etc/systemd/system/greetd.service.d/10-avalonos.conf` | ExecStartPre console-setup |
 | `etc/systemd/user/niri.service.d/00-avalonos.conf` | niri logs to journal |
 | `etc/xdg/autostart/{blueman,nm-applet,geoclue-demo-agent,lxpolkit}.desktop` | `Hidden=true`; those apps are started from the waybar network menu / niri |
@@ -50,9 +50,7 @@ adding or removing overlay files run `scripts/update-overlay-manifest.sh`.
 | `usr/share/qt6ct/colors/AvalonOS.conf` | qt6ct palette |
 | `etc/environment.d/60-avalonos-qt.conf` | `QT_QPA_PLATFORMTHEME=qt6ct` |
 | `usr/local/share/applications/qt6ct.desktop` | hide qt6ct from the launcher |
-| `etc/firefox/pref/avalonos.js` | Firefox dark + palette links |
-| `usr/lib64/firefox/distribution/policies.json` | force-install AvalonOS theme XPI |
-| `usr/share/AvalonOS/firefox/` | `avalonos.xpi` + `manifest.json` |
+| `etc/firefox/policies/policies.json` | Firefox policies: no first-run / default-browser nag, palette page colors (no add-ons; theme add-on dropped 2026-11-14) |
 | `etc/xdg/mimeapps.list` | Firefox browser, Dolphin files |
 | `usr/share/rofi/themes/AvalonOS.rasi` | two-column launcher theme |
 | `usr/share/AvalonOS/rofi.rasi` | shim `@import` of that theme |
@@ -77,5 +75,6 @@ Waybar modules (right): `mpris`, `custom/hw`, `custom/btop`,
 `pulseaudio` (left-click `pavucontrol-qt`, right-click mute),
 `custom/net`, `battery`, `tray`.
 
-Kickstart credentials are not overlay files. `scripts/tailwhip` writes
-`kickstart/AvalonOS.local.ks` from `kickstart/AvalonOS.ks`.
+The kickstart carries no credential (root locked; the user is created at
+first boot). `scripts/tailwhip` only writes QA seed files, which only QA test
+builds read (docs/iso.md, "Test builds").

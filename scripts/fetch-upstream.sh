@@ -19,7 +19,7 @@ fetch() { # file
     local f="$1" base
     for base in $UPSTREAM_URLS; do
         echo "fetch-upstream: $base/$f"
-        if curl -fL --retry 3 --connect-timeout 20 -C - -o "$f.part" "$base/$f"; then
+        if curl -fL --retry 3 --connect-timeout 20 --speed-limit 1000000 --speed-time 60 -C - -o "$f.part" "$base/$f"; then
             mv "$f.part" "$f"; return 0
         fi
         rm -f "$f.part"

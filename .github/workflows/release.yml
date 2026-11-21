@@ -11,7 +11,7 @@ on:
         default: ""
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -20,17 +20,27 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read    # build job never gets a write token (AOS-SEC-03/04)
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
     container:
-      image: registry.fedoraproject.org/fedora:44
+      # fedora:44 pinned by digest (refresh deliberately; verify with `podman pull` + inspect)
+      image: registry.fedoraproject.org/fedora:44@sha256:f8593ba07b355b0af185181d590bce9b32c4f390bb125a15829059755c8a5052
     timeout-minutes: 90
     env:
       ISO: AvalonOS-netinst-x86_64.iso
+      # Release job: never a QA test build (no test seed on release ISOs;
+      # decision 2026-11-14 11:31 CT). Do not change.
+      AVALONOS_TEST_BUILD: "0"
     steps:
       - name: Install build tools
         run: |
           dnf -y --setopt=install_weak_deps=False install \
-            git-core xorriso mtools gnupg2 curl patch tar findutils diffutils gawk coreutils gh
-      - uses: actions/checkout@v4
+            git-core xorriso mtools gnupg2 curl patch tar findutils diffutils gawk coreutils gh \
+            rpm rpm-build rpmlint createrepo_c gcc systemd-rpm-macros desktop-file-utils \
+            cpio gzip python3 zstd
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Read upstream.env
         id: up
@@ -40,46 +50,62 @@ jobs:
           echo "sha256=$UPSTREAM_SHA256" >> "$GITHUB_OUTPUT"
 
       - name: Cache upstream ISO
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: cache/${{ steps.up.outputs.iso }}
           key: upstream-iso-${{ steps.up.outputs.sha256 }}
 
-      - name: Build ISO
-        env:
-          AVALONOS_ADMIN_PW_HASH: ${{ secrets.AVALONOS_ADMIN_PW_HASH }}
-        run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          if [ -z "$AVALONOS_ADMIN_PW_HASH" ]; then
-            echo "::error::Repository secret AVALONOS_ADMIN_PW_HASH is not set (generate with: mkpasswd -m yescrypt)"
-            exit 1
-          fi
-          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
-          scripts/build-iso.sh
-          ls -l out/
-
       - name: Resolve release tag
         id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}   # never interpolate user input into the script
         run: |
-          if [ "${GITHUB_REF_TYPE}" = tag ]; then t="${GITHUB_REF_NAME}"; else t="${{ inputs.tag }}"; fi
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then t="${GITHUB_REF_NAME}"; else t="${INPUT_TAG}"; fi
+          case "$t" in ''|v[0-9]*) ;; *) echo "::error::tag must look like v1.2.3"; exit 1;; esac
+          if [ -n "$t" ] && [ "${GITHUB_REF_TYPE}" != tag ]; then
+            # A manual run must attach to a tag that points at the commit it built.
+            git fetch --depth=1 origin "refs/tags/$t:refs/tags/$t"
+            [ "$(git rev-list -n1 "$t")" = "$GITHUB_SHA" ] || { echo "::error::tag $t does not point at $GITHUB_SHA"; exit 1; }
+          fi
           echo "tag=$t" >> "$GITHUB_OUTPUT"
 
-      - name: Upload to GitHub Release
-        if: steps.tag.outputs.tag != ''
+      - name: Fetch the signed AvalonOS repo
+        # CI holds no signing key (it never leaves the build machine). The
+        # build machine runs scripts/sign-rpms.sh and attaches the signed repo
+        # as avalonos-signed-repo.tar to the release for this tag;
+        # build-iso.sh verifies it against the pinned public key in keys/.
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --verify-tag --title "AvalonOS $TAG" \
-              --notes "AvalonOS netinst installer (remaster of Fedora $(. ./upstream.env; echo "$UPSTREAM_ISO")). Verify with: sha256sum -c $ISO.sha256"
-          fi
-          gh release upload "$TAG" "out/$ISO" "out/$ISO.sha256" --clobber
+          [ -n "$TAG" ] || { echo "::error::a release tag with avalonos-signed-repo.tar is required (CI cannot sign)"; exit 1; }
+          gh release download "$TAG" -p avalonos-signed-repo.tar -D build-in \
+            || { echo "::error::release $TAG has no avalonos-signed-repo.tar; sign on the build machine first"; exit 1; }
+          mkdir -p build-in/signed-repo
+          tar -C build-in/signed-repo -xf build-in/avalonos-signed-repo.tar
+          echo "AVALONOS_SIGNED_REPO=$GITHUB_WORKSPACE/build-in/signed-repo" >> "$GITHUB_ENV"
 
-      - name: Upload workflow artifact (no tag)
-        if: steps.tag.outputs.tag == ''
-        uses: actions/upload-artifact@v4
+      - name: Build ISO
+        # No credential: root is locked and the user is created at first boot
+        # (decision 2026-11-14 9:40 CT); the AVALONOS_ADMIN_PW_HASH secret is
+        # no longer read and can be deleted from the repository settings.
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          [ "$AVALONOS_TEST_BUILD" = 0 ] || { echo "::error::release builds must not set AVALONOS_TEST_BUILD"; exit 1; }
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          scripts/build-iso.sh
+          ls -l out/
+
+      - name: rpmlint AvalonOS RPMs
+        run: |
+          # The repo is signed: trust the pinned AvalonOS key so rpmlint can check it.
+          rpmkeys --import keys/RPM-GPG-KEY-avalonos
+          rpmlint -r packaging/rpm/avalonos.rpmlintrc build/payload/avalonos/repo/*.rpm packaging/rpm/*.spec
+
+      - name: Upload ISO as a workflow artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: avalonos-iso
           path: |
@@ -87,3 +113,30 @@ jobs:
             out/${{ env.ISO }}.sha256
           retention-days: 3
           compression-level: 0
+
+  release:
+    # Separate job: the only one with a write token; it runs no build code.
+    needs: build
+    if: needs.build.outputs.tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # release create/upload only (QA 055188b, AOS-SEC-03)
+    env:
+      ISO: AvalonOS-netinst-x86_64.iso
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.build.outputs.tag }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: avalonos-iso
+          path: out
+      - name: Upload to GitHub Release
+        run: |
+          (cd out && sha256sum -c "$ISO.sha256")
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --verify-tag --title "AvalonOS $TAG" \
+              --notes "AvalonOS netinst installer. Verify with: sha256sum -c $ISO.sha256"
+          fi
+          # No --clobber: a published ISO is never silently replaced.
+          gh release upload "$TAG" "out/$ISO" "out/$ISO.sha256"

@@ -1,5 +1,6 @@
 # AvalonOS: vi is neovim (ADR 0013)
-# Aliases only apply to interactive shells; /usr/local/bin/vi covers sudo/scripts.
+# Interactive shells only. /usr/bin/vi stays vim-minimal's (RPMs must not
+# replace another package's file or own /usr/local); EDITOR/VISUAL cover tools.
 alias vi=nvim
 export EDITOR=nvim
 export VISUAL=nvim

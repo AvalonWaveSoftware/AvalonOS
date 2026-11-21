@@ -7,7 +7,16 @@ vim.g.avalonos_loaded = true
 local avalon = "/usr/share/AvalonOS/nvim"
 vim.opt.packpath:prepend(avalon)
 vim.opt.runtimepath:prepend(avalon)
-vim.opt.runtimepath:append(avalon .. "/parsers")
+-- Tree-sitter parsers are built from pinned grammar sources by the
+-- avalonos-nvim-parsers RPM (arch-specific, so under the libdir).
+local parsers = avalon .. "/parsers"
+for _, d in ipairs({ "/usr/lib64/avalonos/nvim-parsers", "/usr/lib/avalonos/nvim-parsers" }) do
+  if vim.fn.isdirectory(d .. "/parser") == 1 then
+    parsers = d
+    break
+  end
+end
+vim.opt.runtimepath:append(parsers)
 
 vim.g.mapleader = " "
 vim.g.maplocalleader = " "
@@ -64,9 +73,9 @@ end)
 
 pcall(function()
   require("nvim-treesitter").setup({
-    install_dir = avalon .. "/parsers",
+    install_dir = parsers,
   })
-  vim.opt.runtimepath:prepend(avalon .. "/parsers")
+  vim.opt.runtimepath:prepend(parsers)
   vim.api.nvim_create_autocmd("FileType", {
     callback = function()
       pcall(vim.treesitter.start)
@@ -74,12 +83,22 @@ pcall(function()
   })
 end)
 
+-- Language servers are packaged and pinned (Code Security P-M2):
+-- lua-language-server + marksman in avalonos-nvim-lsp (exact versions,
+-- sha256-checked at RPM build), bash-language-server from Fedora. Mason
+-- stays available for servers the user installs by hand (:MasonInstall),
+-- but downloads nothing on its own.
+local lspdir = "/usr/libexec/avalonos/lsp/bin"
+if vim.fn.isdirectory(lspdir) == 1 and not string.find(":" .. (vim.env.PATH or "") .. ":", ":" .. lspdir .. ":", 1, true) then
+  vim.env.PATH = lspdir .. ":" .. (vim.env.PATH or "")
+end
+
 pcall(function()
   require("mason").setup({
     install_root_dir = vim.fn.stdpath("data") .. "/mason",
   })
   require("mason-lspconfig").setup({
-    ensure_installed = { "lua_ls", "bashls", "marksman" },
+    ensure_installed = {},
     automatic_installation = false,
   })
 end)
@@ -94,18 +113,34 @@ local function on_attach(_, bufnr)
 end
 
 do
-  local servers = { "clangd", "pylsp", "lua_ls", "bashls", "marksman" }
+  -- clangd / pylsp are not shipped (dev tools dropped 2026-11-14); they are
+  -- enabled only if the user installs them (dnf install clang-tools-extra
+  -- python3-lsp-server). lua_ls, bashls and marksman are packaged (see above);
+  -- servers installed by hand with Mason are picked up from mason/bin.
+  local servers = {
+    clangd = "clangd",
+    pylsp = "pylsp",
+    lua_ls = "lua-language-server",
+    bashls = "bash-language-server",
+    marksman = "marksman",
+  }
+  local mason_bin = vim.fn.stdpath("data") .. "/mason/bin/"
+  local function have(cmd)
+    return vim.fn.executable(cmd) == 1 or vim.fn.executable(mason_bin .. cmd) == 1
+  end
   local caps = vim.lsp.protocol.make_client_capabilities()
   if vim.lsp.config then
-    for _, name in ipairs(servers) do
-      vim.lsp.config(name, { on_attach = on_attach, capabilities = caps })
-      vim.lsp.enable(name)
+    for name, cmd in pairs(servers) do
+      if have(cmd) then
+        vim.lsp.config(name, { on_attach = on_attach, capabilities = caps })
+        vim.lsp.enable(name)
+      end
     end
   else
     pcall(function()
       local lsp = require("lspconfig")
-      for _, name in ipairs(servers) do
-        if lsp[name] then
+      for name, cmd in pairs(servers) do
+        if lsp[name] and have(cmd) then
           lsp[name].setup({ on_attach = on_attach, capabilities = caps })
         end
       end

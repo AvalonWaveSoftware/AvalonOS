@@ -1,0 +1,357 @@
+#!/usr/bin/python3
+"""First-boot TUI: create the AvalonOS daily user. root stays locked (sudo via wheel).
+
+No default credential ships, and release builds have no way to pre-seed a user
+(decision 2026-11-14 11:31 CT). QA test builds (AVALONOS_TEST_BUILD=1) add
+one in a separate test-only package, never in a release repo, that calls
+create_user() with a pre-hashed password before this program runs.
+"""
+from __future__ import annotations
+
+import curses
+import os
+import pwd
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import time
+
+FLAG = "/var/lib/avalonos/user-ready"
+RESERVED = {
+    "root", "nobody", "nfsnobody", "daemon", "bin", "sys", "sync",
+    "shutdown", "halt", "mail", "operator", "games", "ftp",
+    "systemd-network", "systemd-resolve", "greetd", "greeter",
+}
+NAME_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+
+
+def has_usable_password(name: str) -> bool:
+    """True when `passwd -S` reports a usable password (P, or PS from the
+    older passwd tool), i.e. not locked (L/LK) and not empty (NP)."""
+    r = subprocess.run(["passwd", "-S", "--", name], capture_output=True, text=True, check=False)
+    fields = r.stdout.split()
+    return r.returncode == 0 and len(fields) > 1 and fields[1] in ("P", "PS")
+
+
+def already_done() -> bool:
+    """The marker is the only "done" signal. A pre-existing uid 1000 (older
+    installs that made the user in the kickstart) counts only when it has a
+    usable password; otherwise first boot runs again."""
+    if os.path.exists(FLAG):
+        return True
+    try:
+        name = pwd.getpwuid(1000).pw_name
+    except KeyError:
+        return False
+    if has_usable_password(name):
+        os.makedirs("/var/lib/avalonos", exist_ok=True)
+        open(FLAG, "a").close()
+        return True
+    return False
+
+
+def valid_name(name: str) -> str | None:
+    if not name:
+        return "enter a username"
+    if name in RESERVED:
+        return "that name is reserved"
+    if not NAME_RE.match(name):
+        return "use a-z, 0-9, _ or - (start with a letter)"
+    try:
+        pwd.getpwnam(name)
+        return "that user already exists"
+    except KeyError:
+        return None
+
+
+class NameTaken(Exception):
+    """useradd exit 9: the name appeared after validation; not ours to remove."""
+
+
+def create_user(name: str, password: str | None, pw_hash: str | None = None) -> None:
+    """Create the user; the marker FLAG is written only if every step worked.
+    Any failure removes the half-made user, so the next boot asks again."""
+    if valid_name(name):  # defence in depth: callers validate too
+        raise ValueError("invalid user name")
+    try:
+        r = subprocess.run(
+            ["useradd", "-m", "-s", "/bin/bash", "-G", "wheel,video,input,render", "--", name],
+            check=False,
+        )
+        if r.returncode == 9:  # name taken meanwhile: not ours, never userdel it
+            raise NameTaken(name)
+        if r.returncode != 0:
+            raise subprocess.CalledProcessError(r.returncode, "useradd")
+        _finish_user(name, password, pw_hash)
+        os.makedirs(os.path.dirname(FLAG), exist_ok=True)
+        open(FLAG, "a").close()
+    except NameTaken:
+        raise ValueError("that user already exists") from None
+    except BaseException:
+        # Marker creation itself may have been interrupted after opening it.
+        try:
+            os.unlink(FLAG)
+        except FileNotFoundError:
+            pass
+        subprocess.run(["userdel", "-r", "--", name], check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        raise
+
+
+def _finish_user(name: str, password: str | None, pw_hash: str | None) -> None:
+    if pw_hash is not None:
+        # Pre-hashed (crypt(3)) password, set via chpasswd -e on stdin (never argv).
+        subprocess.run(["chpasswd", "-e"], input=f"{name}:{pw_hash}\n", text=True, check=True)
+    if password is not None:
+        subprocess.run(
+            ["chpasswd"],
+            input=f"{name}:{password}\n",
+            text=True,
+            check=True,
+        )
+    linger = f"/var/lib/systemd/linger/{name}"
+    os.makedirs("/var/lib/systemd/linger", exist_ok=True)
+    open(linger, "a").close()
+    home = pwd.getpwnam(name).pw_dir
+    docs_src = "/usr/share/doc/avalonos-docs/AvalonOS-Docs"  # avalonos-docs RPM
+    if os.path.isdir(docs_src):
+        dest = os.path.join(home, "AvalonOS-Docs")
+        shutil.copytree(docs_src, dest, dirs_exist_ok=True)
+        uid, gid = pwd.getpwnam(name).pw_uid, pwd.getpwnam(name).pw_gid
+        for root, dirs, files in os.walk(dest):
+            os.chown(root, uid, gid)
+            for fn in files:
+                os.chown(os.path.join(root, fn), uid, gid)
+        if shutil.which("restorecon"):
+            subprocess.run(["restorecon", "-RF", dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if shutil.which("xdg-user-dirs-update"):
+        subprocess.run(
+            ["su", "-s", "/bin/bash", "-c", "xdg-user-dirs-update", name],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    if not has_usable_password(name):
+        raise RuntimeError("password was not set")
+
+
+# Keys that would otherwise kill or stop the program (QA 2026-11-14: Ctrl-C
+# left tty1 with a traceback, no user and root locked). raw() delivers them
+# as plain keys; the signals are ignored too (see main()).
+CTRL_KEYS = {3: "ctrl-c", 4: "ctrl-d", 26: "ctrl-z", 28: "ctrl-\\"}
+MAX_READ_ERRORS = 50  # consecutive getch() errors (tty gone): exit, unit restarts
+
+
+def run_ui(stdscr) -> int:
+    curses.curs_set(1)
+    curses.noecho()
+    curses.raw()
+    stdscr.keypad(True)
+    if curses.has_colors():
+        curses.start_color()
+        curses.init_pair(1, curses.COLOR_GREEN, curses.COLOR_BLACK)    # neon
+        curses.init_pair(2, curses.COLOR_BLACK, curses.COLOR_GREEN)    # focus
+        curses.init_pair(3, curses.COLOR_MAGENTA, curses.COLOR_BLACK)  # accent
+        curses.init_pair(4, curses.COLOR_WHITE, curses.COLOR_BLACK)
+        curses.init_pair(5, curses.COLOR_CYAN, curses.COLOR_BLACK)
+    neon = curses.color_pair(1) | curses.A_BOLD
+    focus = curses.color_pair(2) | curses.A_BOLD
+    accent = curses.color_pair(3) | curses.A_BOLD
+    fg = curses.color_pair(4)
+    dim = curses.color_pair(5)
+
+    values = ["", "", ""]
+    idx = 0
+    err = ""
+    read_errors = 0
+    hint = "tab / arrows  ·  enter to create  ·  admin via sudo (root stays locked)"
+
+    while True:
+        h, w = stdscr.getmaxyx()
+        stdscr.erase()
+        stdscr.bkgd(" ", fg)
+
+        title = " AVALONOS "
+        sub = "create your user"
+        stdscr.addstr(0, max(0, (w - len(title)) // 2), title[:w], focus)
+        if h > 2:
+            stdscr.addstr(1, max(0, (w - len(sub)) // 2), sub[:w], neon)
+
+        card_h = 14
+        card_w = min(56, max(40, w - 4))
+        y0 = max(3, (h - card_h) // 2)
+        x0 = max(1, (w - card_w) // 2)
+
+        def box(y, x, hh, ww):
+            try:
+                stdscr.attron(neon)
+                stdscr.addch(y, x, curses.ACS_ULCORNER)
+                stdscr.hline(y, x + 1, curses.ACS_HLINE, ww - 2)
+                stdscr.addch(y, x + ww - 1, curses.ACS_URCORNER)
+                for r in range(1, hh - 1):
+                    stdscr.addch(y + r, x, curses.ACS_VLINE)
+                    stdscr.addch(y + r, x + ww - 1, curses.ACS_VLINE)
+                stdscr.addch(y + hh - 1, x, curses.ACS_LLCORNER)
+                stdscr.hline(y + hh - 1, x + 1, curses.ACS_HLINE, ww - 2)
+                stdscr.addch(y + hh - 1, x + ww - 1, curses.ACS_LRCORNER)
+                stdscr.attroff(neon)
+            except curses.error:
+                pass
+
+        if y0 + card_h < h and x0 + card_w < w:
+            box(y0, x0, card_h, card_w)
+
+        labels = ["username", "password", "confirm"]
+        for i, lab in enumerate(labels):
+            ly = y0 + 2 + i * 3
+            lx = x0 + 3
+            inner = card_w - 6
+            try:
+                stdscr.addstr(ly, lx, lab, neon if i == idx else dim)
+                shown = values[i] if i == 0 else ("•" * len(values[i]))
+                pad = shown[-inner + 2 :] if len(shown) > inner - 2 else shown
+                pad = pad + " " * (inner - 2 - len(pad))
+                attr = focus if i == idx else fg
+                stdscr.addstr(ly + 1, lx, " " + pad + " ", attr)
+            except curses.error:
+                pass
+
+        by = y0 + 11
+        btn = "  create account  "
+        bx = x0 + (card_w - len(btn)) // 2
+        try:
+            stdscr.addstr(by, bx, btn, focus if idx == 3 else neon)
+        except curses.error:
+            pass
+
+        if err:
+            try:
+                stdscr.addstr(h - 2, max(0, (w - len(err)) // 2), err[:w], accent)
+            except curses.error:
+                pass
+        try:
+            stdscr.addstr(h - 1, max(0, (w - len(hint)) // 2), hint[:w], dim)
+        except curses.error:
+            pass
+
+        if idx < 3:
+            curses.curs_set(1)
+            inner = min(56, max(40, w - 4)) - 6
+            cx = x0 + 4 + min(len(values[idx]), inner - 2)
+            cy = y0 + 3 + idx * 3
+            try:
+                stdscr.move(cy, min(cx, w - 1))
+            except curses.error:
+                pass
+        else:
+            curses.curs_set(0)
+        stdscr.refresh()
+
+        try:
+            ch = stdscr.getch()
+        except KeyboardInterrupt:  # belt and braces: SIGINT is ignored in main()
+            ch = 3
+        if ch == -1:  # read error / hangup: do not spin
+            read_errors += 1
+            if read_errors >= MAX_READ_ERRORS:
+                return 1
+            time.sleep(0.1)
+            continue
+        read_errors = 0
+        if ch in CTRL_KEYS:
+            err = f"{CTRL_KEYS[ch]} ignored: create your user to continue"
+            continue
+        if ch in (9, curses.KEY_DOWN):  # tab
+            idx = (idx + 1) % 4
+            err = ""
+        elif ch in (curses.KEY_BTAB, curses.KEY_UP, 353):
+            idx = (idx - 1) % 4
+            err = ""
+        elif ch in (10, 13, curses.KEY_ENTER):
+            if idx < 3:
+                idx += 1
+                continue
+            err = valid_name(values[0]) or ""
+            if not err and not values[1]:
+                err = "enter a password"
+            if not err and values[1] != values[2]:
+                err = "passwords do not match"
+            if err:
+                if valid_name(values[0]):
+                    idx = 1 if not values[1] else 2
+                else:
+                    idx = 0
+                continue
+            try:
+                err = "creating account..."
+                stdscr.refresh()
+                create_user(values[0], values[1])
+                return 0
+            except subprocess.CalledProcessError as exc:
+                err = f"could not create user ({exc.returncode})"
+            except (OSError, RuntimeError, ValueError) as exc:
+                err = f"could not create user ({type(exc).__name__})"
+        elif ch in (curses.KEY_BACKSPACE, 127, 8) and idx < 3 and values[idx]:
+            values[idx] = values[idx][:-1]
+            err = ""
+        elif idx < 3 and 32 <= ch <= 126:
+            if len(values[idx]) < 64:
+                values[idx] += chr(ch)
+                err = ""
+    return 1
+
+
+def upgrade_and_reboot() -> None:
+    sys.stdout.write("\naccount created.\nwaiting for network...\n")
+    sys.stdout.flush()
+    subprocess.run(["nm-online", "-t", "90"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    sys.stdout.write("updating packages (this can take a few minutes)...\n\n")
+    sys.stdout.flush()
+    subprocess.run(
+        ["dnf", "-y", "--setopt=install_weak_deps=False", "upgrade"],
+        check=False,
+    )
+    sys.stdout.write("\nrebooting...\n")
+    sys.stdout.flush()
+    subprocess.run(["systemctl", "reboot"], check=False)
+
+
+def main() -> int:
+    if os.geteuid() != 0:
+        print("avalonos-make-user: must run as root", file=sys.stderr)
+        return 1
+    # No way out of first boot but creating the user: Ctrl-C/Ctrl-\/Ctrl-Z
+    # are ignored here and in the dnf upgrade (SIG_IGN is inherited by exec).
+    # A crash or exit still fails the unit, which restarts (Restart=on-failure).
+    for sig in (signal.SIGINT, signal.SIGQUIT, signal.SIGTSTP):
+        signal.signal(sig, signal.SIG_IGN)
+    if already_done():
+        return 0
+    os.environ.setdefault("TERM", "linux")
+    while True:
+        try:
+            rc = curses.wrapper(run_ui)
+        except (KeyboardInterrupt, EOFError):
+            # wrapper teardown can be interrupted after the transaction committed.
+            if os.path.exists(FLAG):
+                rc = 0
+                break
+            continue  # failed transactions were rolled back
+        except curses.error:
+            print("avalonos-make-user: need a real TTY", file=sys.stderr)
+            return 1
+        break
+    if rc != 0:
+        return rc
+    while True:
+        try:
+            upgrade_and_reboot()
+            return 0
+        except (KeyboardInterrupt, EOFError):
+            # The account is committed: retry this phase, never the user form.
+            continue
+
+
+if __name__ == "__main__":
+    sys.exit(main())

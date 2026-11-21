@@ -1,0 +1,20 @@
+# AvalonOS installer repo (P-M1r, decision 2026-11-14 11:30 CT). Shipped in
+# /avalonos/updates.img (inst.updates= on every boot entry); replaces the
+# installer's own file of this name. Anaconda installs from these system repos
+# (closest-mirror source, no kickstart url). gpgcheck=1 + the pinned gpgkey:
+# libdnf5 verifies every package's signature BEFORE the transaction (and any
+# scriptlet) runs, and aborts the install otherwise.
+# repo_gpgcheck=0: Fedora publishes no signed metadata (repomd.xml.asc is
+# HTTP 404, checked 2026-11-14), so repo_gpgcheck=1 cannot load. Metadata
+# integrity: HTTPS metalink (repomd.xml checksums) + sslverify.
+
+[fedora]
+name=Fedora 44 - x86_64
+metalink=https://mirrors.fedoraproject.org/metalink?repo=fedora-44&arch=x86_64
+enabled=1
+type=rpm
+gpgcheck=1
+repo_gpgcheck=0
+gpgkey=file:///etc/pki/avalonos-installer/RPM-GPG-KEY-fedora-44-x86_64
+sslverify=1
+skip_if_unavailable=0

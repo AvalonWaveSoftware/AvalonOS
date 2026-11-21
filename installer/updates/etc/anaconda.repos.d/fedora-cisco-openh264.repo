@@ -1,0 +1,2 @@
+# AvalonOS installer (P-M1r): intentionally empty. Replaces the installer's
+# fedora-cisco-openh264.repo so the install uses only the pinned repos in this directory.

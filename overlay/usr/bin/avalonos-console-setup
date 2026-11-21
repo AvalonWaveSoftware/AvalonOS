@@ -1,0 +1,30 @@
+#!/bin/sh
+# Root helper: AvalonOS colors + 32px font on the greeter VT (tty1).
+# Runs before the greeter / first-boot TUI draws. First let pending device
+# events finish (on UEFI the GPU driver takes the console over from simpledrm
+# and systemd-vconsole-setup reloads the font), so the TUI starts on the final
+# framebuffer and font. The font is CP437-ordered (ter-i32n, like the kernel
+# built-in fonts), so a later font change still cannot move glyphs under
+# already-drawn cells (QA r6 FAIL 2; testing/offline/console-font-test.sh).
+set -e
+FONT=ter-i32n
+VT=/dev/tty1
+udevadm settle --timeout=15 2>/dev/null || true
+if [ -e "$VT" ]; then
+    # No fallback to a font in another glyph order (e.g. latarcyrheb-sun32):
+    # without ter-i32n the console keeps its current font.
+    setfont "$FONT" -C "$VT" 2>/dev/null || true
+    python3 - "$VT" <<'PY' 2>/dev/null || true
+import fcntl, os, sys
+KDSETMODE, KD_TEXT = 0x4B3A, 0x00
+fd = os.open(sys.argv[1], os.O_RDWR)
+try:
+    fcntl.ioctl(fd, KDSETMODE, KD_TEXT)
+finally:
+    os.close(fd)
+PY
+fi
+if [ -r /usr/share/AvalonOS/vconsole.palette ]; then
+    setvtrgb /usr/share/AvalonOS/vconsole.palette 2>/dev/null || true
+fi
+exit 0

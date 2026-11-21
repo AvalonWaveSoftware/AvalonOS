@@ -1,0 +1,104 @@
+#!/usr/bin/python3
+"""TEST BUILDS ONLY. Package avalonos-testseed, built only with
+AVALONOS_TEST_BUILD=1 and never part of a release repo or release ISO
+(decision 2026-11-14 11:31 CT: "Strip the test-seed from release ISOs, keep it
+for test builds only").
+
+ExecStartPre of avalonos-firstboot-user.service (drop-in
+50-avalonos-testseed.conf). With the kernel argument ``avalonos.testseed=1``
+AND a disk labelled ``AVTESTSEED`` holding ``avalonos-seed.conf``
+(written by tailwhip)::
+
+    user=qa
+    hash=<crypt(3) hash from mkpasswd -m yescrypt>
+    upgrade=0
+
+it creates that user with avalonos-make-user's create_user() and no TUI.
+Without both, it does nothing and the normal first-boot TUI runs. Plaintext
+passwords are refused; the hash is never logged.
+"""
+from __future__ import annotations
+
+import importlib.machinery
+import importlib.util
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+MAKE_USER = "/usr/bin/avalonos-make-user"
+SEED_LABEL = "AVTESTSEED"
+SEED_FILE = "avalonos-seed.conf"
+SEED_ARG = "avalonos.testseed=1"
+HASH_RE = re.compile(r"^\$(y|gy|7|2b|6|5)\$[^\s:]+$")
+
+
+def load_make_user(path: str = MAKE_USER):
+    loader = importlib.machinery.SourceFileLoader("avalonos_make_user", path)
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+def seed_requested(cmdline: str = "/proc/cmdline") -> bool:
+    try:
+        with open(cmdline, encoding="ascii", errors="replace") as fh:
+            return SEED_ARG in fh.read().split()
+    except OSError:
+        return False
+
+
+def parse_seed(text: str, valid_name) -> dict | None:
+    kv = dict(
+        line.strip().split("=", 1)
+        for line in text.splitlines()
+        if "=" in line and not line.lstrip().startswith("#")
+    )
+    user, pw_hash = kv.get("user", ""), kv.get("hash", "")
+    if valid_name(user) or not HASH_RE.match(pw_hash):
+        print("testseed-user: seed ignored (bad user, or hash is not a crypt(3) string; plaintext refused)", file=sys.stderr)
+        return None
+    return {"user": user, "hash": pw_hash, "upgrade": kv.get("upgrade", "1") != "0"}
+
+
+def read_seed(valid_name) -> dict | None:
+    dev = f"/dev/disk/by-label/{SEED_LABEL}"
+    if not seed_requested() or not os.path.exists(dev):
+        return None
+    mnt = "/run/avalonos-testseed"
+    os.makedirs(mnt, mode=0o700, exist_ok=True)
+    if subprocess.run(["mount", "-o", "ro,nosuid,nodev,noexec", dev, mnt], check=False).returncode != 0:
+        return None
+    try:
+        with open(os.path.join(mnt, SEED_FILE), encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        text = ""
+    finally:
+        subprocess.run(["umount", mnt], check=False)
+    return parse_seed(text, valid_name)
+
+
+def main() -> int:
+    if os.geteuid() != 0:
+        print("testseed-user: must run as root", file=sys.stderr)
+        return 1
+    mu = load_make_user()
+    if mu.already_done():
+        return 0
+    seed = read_seed(mu.valid_name)
+    if not seed:
+        return 0
+    mu.create_user(seed["user"], None, seed["hash"])
+    print(f"testseed-user: created test user {seed['user']}", file=sys.stderr)
+    if shutil.which("grubby"):  # one-shot: drop the test flag again
+        subprocess.run(["grubby", "--update-kernel=ALL", f"--remove-args={SEED_ARG}"], check=False)
+    if seed["upgrade"]:
+        mu.upgrade_and_reboot()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

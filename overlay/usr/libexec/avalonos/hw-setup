@@ -1,0 +1,168 @@
+#!/bin/bash
+# AvalonOS hardware setup, run once from the kickstart %post.
+# Behaviour = 02b02d3/Sep 13 NVIDIA branch with two changes:
+#
+#   ARCH-03: simpledrm is disabled ONLY on NVIDIA machines whose driver built.
+#     Elsewhere it stays: it is the console and the kms_swrast display path
+#     when a GPU has no KMS driver. Native drivers take over from it at boot.
+#   ARCH-04: the NVIDIA step FAILS CLOSED. nouveau is blacklisted only after
+#     akmod-nvidia has produced nvidia.ko for every installed kernel. On any
+#     failure the NVIDIA packages are removed (their %postun drops the
+#     nouveau blacklist args they add), every nouveau blacklist we know of is
+#     stripped, and the machine boots on nouveau (or simpledrm + kms_swrast).
+#     The failure is logged to /var/log/avalonos-hw.log and the journal.
+#
+# Secure Boot (decision 2026-11-14 10:30 CT: document turning it off; no MOK
+# enrollment; Code Security P-M4): the akmod nvidia.ko is unsigned, or signed
+# by an akmods key the firmware does not trust, so a Secure Boot kernel
+# refuses to load it. With Secure Boot on, nouveau is blacklisted ONLY if
+# nvidia.ko for every kernel is signed by a key the running kernel's keyrings
+# trust (/proc/keys). Otherwise the NVIDIA step fails closed and the machine
+# stays on nouveau; the reason goes to /var/log/avalonos-hw.log and the
+# journal. Turn Secure Boot off in the firmware, then run this script again
+# (How-to-Install.md section 3).
+set -u
+LOG=/var/log/avalonos-hw.log
+NV_ARGS='rd.driver.blacklist=nouveau modprobe.blacklist=nouveau nvidia-drm.modeset=1 nvidia-drm.fbdev=1'
+# What xorg-x11-drv-nvidia's own %post adds (RPM Fusion 595.x):
+RPMF_ARGS='rd.driver.blacklist=nouveau,nova_core modprobe.blacklist=nouveau,nova_core'
+SIMPLEDRM_ARG='initcall_blacklist=simpledrm_platform_driver_init'
+NV_PKGS=(akmod-nvidia xorg-x11-drv-nvidia)
+have() { command -v "$1" >/dev/null 2>&1; }
+# Prints on, off or unknown (Code Security P-L7). Legacy BIOS (no
+# /sys/firmware/efi) has no Secure Boot: off. On UEFI only an explicit answer
+# counts: the SecureBoot variable (4 attribute bytes, then 1 = on, 0 = off),
+# else `mokutil --sb-state` saying enabled/disabled. Anything else (variable
+# missing, unreadable, short or odd; no mokutil) is unknown, and the caller
+# fails closed on unknown exactly as on "on".
+EFI=/sys/firmware/efi
+secure_boot_state() {
+    local v b
+    [ -d "$EFI" ] || { echo off; return; }
+    v="$EFI/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"
+    if [ -e "$v" ]; then
+        b="$(od -An -t u1 -j 4 -N 1 "$v" 2>/dev/null | tr -d ' \n')"
+        case "$b" in 1) echo on; return ;; 0) echo off; return ;; esac
+    fi
+    if have mokutil; then
+        case "$(mokutil --sb-state 2>/dev/null)" in
+            *'SecureBoot enabled'*) echo on; return ;;
+            *'SecureBoot disabled'*) echo off; return ;;
+        esac
+    fi
+    echo unknown
+}
+# Is key id $1 (hex, any case, colons allowed) in a kernel keyring we can see?
+key_trusted() {
+    local kid
+    kid="$(printf '%s' "$1" | tr -d ': \n' | tr 'A-F' 'a-f')"
+    [ ${#kid} -ge 8 ] || return 1
+    tr 'A-F' 'a-f' < /proc/keys 2>/dev/null | grep -q -- "$kid"
+}
+# Enrolled akmods signing cert (the only way an akmod nvidia.ko can load
+# with Secure Boot on). Unknown = not enrolled (fail closed).
+akmods_key_enrolled() {
+    local cert=/etc/pki/akmods/certs/public_key.der skid
+    [ -s "$cert" ] && have openssl || return 1
+    skid="$(openssl x509 -inform der -in "$cert" -noout -ext subjectKeyIdentifier 2>/dev/null | sed -n '2p')"
+    [ -n "$skid" ] && key_trusted "$skid"
+}
+# nvidia.ko signed, and by a key the kernel trusts.
+module_trusted() {  # $1 = module file
+    local signer sigkey
+    signer="$(modinfo -F signer "$1" 2>/dev/null)"
+    sigkey="$(modinfo -F sig_key "$1" 2>/dev/null)"
+    [ -n "$signer" ] && [ -n "$sigkey" ] && key_trusted "$sigkey"
+}
+log() {  # [-p PRIORITY] MESSAGE...
+    local prio=info
+    if [ "${1:-}" = -p ]; then prio="$2"; shift 2; fi
+    printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$prio" "$*" >> "$LOG"
+    printf 'AvalonOS: %s\n' "$*" >&2
+    if have systemd-cat; then printf '%s\n' "$*" | systemd-cat -t avalonos-hw -p "$prio" 2>/dev/null; fi
+    return 0
+}
+strip_nouveau_blacklist() {
+    if have grubby; then
+        grubby --update-kernel=ALL --remove-args="$NV_ARGS $RPMF_ARGS $SIMPLEDRM_ARG" || true
+    fi
+    rm -f /etc/modprobe.d/blacklist-nouveau.conf
+}
+nvidia_fail() {  # $1 = reason
+    log -p err "NVIDIA driver setup FAILED ($1); keeping nouveau, not blacklisting it"
+    # Removing the packages runs their scriptlets, which drop the args they added.
+    dnf -y remove "${NV_PKGS[@]}" 'xorg-x11-drv-nvidia-*' 'kmod-nvidia-*' >> "$LOG" 2>&1 || true
+    systemctl disable akmods.service >> "$LOG" 2>&1 || true
+    strip_nouveau_blacklist
+    log "fallback: nouveau (or simpledrm + kms_swrast) will drive the display"
+    exit 0   # the install continues; QA checks $LOG
+}
+
+if lspci -n 2>/dev/null | grep -q ' 10de:'; then
+    log "NVIDIA GPU present"
+    sb=0
+    case "$(secure_boot_state)" in
+    off)
+        log "Secure Boot is off (or not UEFI)" ;;
+    on)
+        sb=1
+        log -p warning "Secure Boot is ON: nvidia.ko must be signed by a key the kernel trusts, or nouveau stays"
+        # Without an enrolled akmods key the module can never load: fail
+        # before the long build (no MOK enrollment by AvalonOS).
+        akmods_key_enrolled \
+            || nvidia_fail "Secure Boot is on and no enrolled akmods signing key; an akmod nvidia.ko cannot load (turn Secure Boot off, then run $0 again)" ;;
+    *)
+        # P-L7: UEFI but the state cannot be read: fail closed (keep nouveau).
+        nvidia_fail "UEFI Secure Boot state unreadable (SecureBoot efivar and mokutil gave no answer); treated as on (check that Secure Boot is off in the firmware, then run $0 again)" ;;
+    esac
+    log "installing akmod-nvidia"
+    dnf --setopt=install_weak_deps=False -y install \
+        "${NV_PKGS[@]}" kernel-devel akmods gcc make elfutils-libelf-devel >> "$LOG" 2>&1 \
+        || nvidia_fail "dnf install of the driver packages"
+    kernels="$(rpm -q kernel --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n')"
+    [ -n "$kernels" ] || nvidia_fail "no installed kernel found"
+    while read -r k; do
+        if ! rpm -q "kernel-devel-$k" >/dev/null 2>&1; then
+            dnf --setopt=install_weak_deps=False -y install "kernel-devel-$k" >> "$LOG" 2>&1 \
+                || nvidia_fail "kernel-devel-$k not installable"
+        fi
+        akmods --force --kernels "$k" >> "$LOG" 2>&1 || nvidia_fail "akmods build for $k"
+        # akmods can exit 0 without a module; require the module itself.
+        mod="$(find "/lib/modules/$k" -name 'nvidia.ko*' -print -quit 2>/dev/null)"
+        [ -n "$mod" ] || nvidia_fail "no nvidia.ko for kernel $k after akmods"
+        if [ "$sb" = 1 ]; then
+            module_trusted "$mod" \
+                || nvidia_fail "Secure Boot is on and $mod is not signed by a key the kernel trusts (signer: $(modinfo -F signer "$mod" 2>/dev/null || true))"
+            log "Secure Boot: $mod signed by a trusted key ($(modinfo -F signer "$mod" 2>/dev/null))"
+        fi
+    done <<< "$kernels"
+    # Success only from here on: now (and only now) blacklist nouveau.
+    systemctl enable akmods.service >> "$LOG" 2>&1 || true
+    if have grubby; then
+        grubby --update-kernel=ALL --args="$NV_ARGS $SIMPLEDRM_ARG" \
+            || nvidia_fail "grubby could not set the NVIDIA kernel arguments"
+    fi
+    mkdir -p /etc/modprobe.d
+    printf '%s\n' \
+        '# Written by /usr/libexec/avalonos/hw-setup after nvidia.ko built OK.' \
+        'blacklist nouveau' \
+        'options nouveau modeset=0' \
+        'install nouveau /bin/true' \
+        > /etc/modprobe.d/blacklist-nouveau.conf
+    # EFI simpledrm as card0 next to nvidia-drm makes niri hit EINVAL /
+    # "Device missing" (niri issue #3007); simpledrm is built in, so only the
+    # initcall_blacklist argument above has an effect.
+    log "NVIDIA driver built for all kernels; nouveau and simpledrm disabled"
+else
+    log "no NVIDIA GPU - skipping akmod; blocking nvidia modules; simpledrm stays enabled"
+    strip_nouveau_blacklist
+    mkdir -p /etc/modprobe.d
+    printf '%s\n' \
+        '# Written by /usr/libexec/avalonos/hw-setup (no NVIDIA GPU).' \
+        'blacklist nvidia' \
+        'blacklist nvidia_drm' \
+        'blacklist nvidia_modeset' \
+        'blacklist nvidia_uvm' \
+        > /etc/modprobe.d/avalonos-no-nvidia.conf
+fi
+exit 0

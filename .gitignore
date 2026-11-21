@@ -11,3 +11,9 @@
 # Rendered kickstarts carry a password hash (ADR 0017)
 /kickstart/*.local.ks
 ks.cfg
+# Test seeds carry a password hash
+avalonos-seed.conf
+# RPM build outputs
+/packaging/rpm/build/
+# Signed repo fetched by CI
+/build-in/

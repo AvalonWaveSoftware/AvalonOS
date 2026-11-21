@@ -10,9 +10,9 @@ user is also copied to `~/AvalonOS-Docs` on installed machines.
 > original `/root/AvalonOS` git tree was lost. Overlay, kickstart and GRUB
 > changes are byte-exact; some helper scripts are reconstructions (ADR 0020).
 
-Daily graphical user on this box and on the ISO default: **admin**
-(uid 1000, `wheel`). Root has no GUI session. ISO root is locked
-(`rootpw --lock`) unless `scripts/tailwhip --root-password-env` is used.
+ISO installs: root is locked (`rootpw --lock`) and the daily user (uid 1000,
+`wheel`) is created on first boot by `avalonos-make-user`. No password or
+hash is on the ISO.
 
 ## Locked stack
 
@@ -35,17 +35,21 @@ Wallpaper: `wallpaper.png` via **swaybg**. Greeter is TTY tuigreet (no image).
 |---|---|
 | `kickstart/AvalonOS.ks` | kickstart template (`@AVALONOS_*@` placeholders, no hashes) |
 | `kickstart/packages.inc` | `%packages` list; inlined into the kickstart at build time |
-| `overlay/` | DE files, deployed as the golden tarball |
-| `packaging/overlay.manifest` | tar order, modes and mtimes for a byte-reproducible `overlay.tar` |
+| `overlay/` | DE files, packaged into the `avalonos-*` RPMs |
+| `packaging/rpm/` | RPM specs (`avalonos`, `avalonos-nvim-parsers`, `avalonos-nvim-lsp`), preset, rpmlintrc |
+| `installer/updates/` | installer repo files (`gpgcheck=1`, pinned keys) packed into `/avalonos/updates.img` (P-M1r) |
+| `testing/testseed/` | QA test builds only (`AVALONOS_TEST_BUILD=1`): first-boot test seed; never in a release |
+| `packaging/overlay.manifest` | legacy (golden tarball, no longer used by the ISO build) |
 | `boot/` | GRUB patches against the upstream `grub.cfg` (BIOS + EFI/ESP) |
 | `scripts/` | build, fetch, tarball, credential and reference-box helpers |
 | `upstream.env` | pinned upstream Fedora ISO (name, size, sha256, mirrors) |
-| `keys/fedora-44.gpg` | Fedora 44 signing key used to verify the upstream CHECKSUM |
+| `keys/` | Fedora 44 key (verifies the upstream CHECKSUM), RPM Fusion keys, `PINNED-FINGERPRINTS` |
 | `docs/` | ADRs, overlay map, ISO notes, hardware, package logs |
 | `.github/workflows/release.yml` | CI build, attaches the ISO to a GitHub Release |
 
 Not in git: the upstream ISO (`cache/`), build output (`build/`, `out/`),
-generated tarballs, and `kickstart/AvalonOS.local.ks` (password hash).
+generated RPMs, and any `avalonos-seed.conf` test seed (QA test builds
+only; see docs/iso.md "Test builds").
 
 ## Rules
 
@@ -72,27 +76,39 @@ login, credentials.
 
 Remaster of Fedora 44 Everything netinst (ADR 0019). Build as an ordinary
 user (no root, no loop mounts) on Fedora or any Linux with `xorriso`,
-`mtools`, `gnupg2`/`gpgv`, `curl`, `patch`, `tar` and `mkpasswd`:
+`mtools`, `gnupg2`/`gpgv`, `curl`, `patch`, `tar`, `rpm-build`,
+`createrepo_c` and `gcc` (see `docs/iso.md`; a signed AvalonOS repo is required, see below):
 
 ```bash
-export AVALONOS_ADMIN_PW_HASH="$(mkpasswd -m yescrypt)"   # prompts for the password
 scripts/build-iso.sh
 ```
 
 Output: `out/AvalonOS-netinst-x86_64.iso` and `.sha256`. The first run
 downloads the upstream ISO (1.2 GB) into `cache/` and verifies it against
-Fedora's signed CHECKSUM and `upstream.env`. Instead of the env var you can
-run `scripts/tailwhip --user admin` once (writes the untracked
-`kickstart/AvalonOS.local.ks`). With no credentials the build fails;
-`AVALONOS_INSECURE_DEFAULT_PASSWORD=1` builds the legacy **admin/changeme**
-image. That build is **insecure** and only for throwaway VMs.
+Fedora's signed CHECKSUM and `upstream.env`.
 
 Install needs network. The kickstart includes RPM Fusion and builds
-`akmod-nvidia` in `%post`. Autopart **wipes the disk**.
+`akmod-nvidia` in `%post` (fails closed: nouveau stays if the build fails).
+**NVIDIA machines: turn Secure Boot off in the firmware before installing**:
+the akmod driver is unsigned and will not load with Secure Boot on; AvalonOS
+then stays on nouveau (see [How to Install](How-to-Install.md) §3).
+The default boot entry asks which disk to use and erases only that disk
+after you type its name; only the separate "ERASES ALL DISKS" entry wipes
+unattended.
 
-Releases: push a `v*` tag; `.github/workflows/release.yml` builds in a
-`fedora:44` container with the `AVALONOS_ADMIN_PW_HASH` repository secret
-and uploads the ISO + `.sha256` to the Release for that tag. Release
+AvalonOS RPMs and repo metadata are signed (key fingerprint
+`F0AA82E5FEB779364658A18D96508B1357FDAB48`, public key
+`keys/RPM-GPG-KEY-avalonos`); the private key stays on the build machine, so
+`build-iso.sh` needs `AVALONOS_SIGN=1` there or `AVALONOS_SIGNED_REPO=DIR`
+elsewhere (see `docs/iso.md`). QA test builds (`AVALONOS_TEST_BUILD=1`) use a
+separate TEST signing key (`keys/RPM-GPG-KEY-avalonos-test`) that no release
+ever ships or trusts.
+
+Releases: sign on the build machine and attach the signed repo as
+`avalonos-signed-repo.tar` to the release, then push the `v*` tag;
+`.github/workflows/release.yml` builds in a `fedora:44` container (no signing
+key), verifies the repo against the pinned key, runs rpmlint, and uploads the
+ISO + `.sha256` to the Release for that tag. Release
 assets may be up to 2 GB each; the ISO is about 1.24 GB.
 
 ## Session keybinds (niri)
@@ -130,10 +146,13 @@ Icons: **Candy**.
 
 Neovim (`<Space>` leader): `<leader>e` tree, `<leader>t` terminal,
 `<leader>f` FZF, `gd`/`K` LSP. `:q` / `:wq` quit nvim entirely.
+Language servers lua-language-server, marksman (`avalonos-nvim-lsp`, pinned
+by version and sha256) and bash-language-server (Fedora) are installed;
+nothing is downloaded on first start.
 
 Neovim plugins are vendored as shipped under
 `overlay/usr/share/AvalonOS/nvim/pack/avalon/start/` (SHAs in
-`docs/packages/nvim-plugins.md`). The tree-sitter parsers in
-`overlay/usr/share/AvalonOS/nvim/parsers/parser/*.so` are **prebuilt x86_64
-binaries** committed as-is so the overlay tarball stays byte-identical;
-rebuild them with `:TSInstall` on a Fedora 44 box if you bump the plugins.
+`docs/packages/nvim-plugins.md`). The tree-sitter parsers are
+compiled from pinned grammar sources at build time
+(`packaging/rpm/avalonos-nvim-parsers.spec`, revisions in
+`packaging/rpm/nvim-parser-info/`); no prebuilt binaries are committed.
