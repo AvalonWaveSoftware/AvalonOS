@@ -97,10 +97,13 @@ upstream ISO (`upstream-netinst.sha256`). `scripts/check-avalonos-dir.sh`
 allows exactly `packages.inc`, the build kind's key, `updates.img` and the
 signed `repo/` under `/avalonos`, each byte-identical to what the tree builds;
 `verify-iso.sh` also scans the raw ISO and ESP bytes and requires both
-kickstarts to equal `render-kickstart.sh` output, and `--full` compares every
+kickstarts to equal `render-kickstart.sh` output. The default path (and
+`--full`; `--quick` turns this compare off) compares every
 other file, directory and link, the ESP, the GRUB configs (upstream + our
 patches) and `eltorito.img` (except the bytes xorriso rewrites) with
-upstream. After the Codex coverage review (2026-11-14) the check also
+upstream. The raw ISO/ESP scan on the default path also caught a gzip'd
+TEST key in ESP free space (P-L14; `--full` additionally deep-compares the
+ESP to upstream's ESP + grub.cfg). After the Codex coverage review (2026-11-14) the check also
 assembles OpenPGP partial-length packets, decodes hex runs and zlib streams,
 carves every ZIP local entry (concatenated zips), accepts any LZMA dictionary,
 reads V7 tar, treats a speculative stream that decodes completely as real
@@ -110,10 +113,19 @@ encrypted zip entries, embedded 7z/rar/lzop/LUKS data, encoded runs over
 except the prose ones, and checks path names and link targets.
 `scripts/check-iso-unowned.sh` gives every ISO byte outside any file
 (system area, directory records, slack, appended data) the full decoding
-scan, and with `--full` requires the ESP to equal upstream's ESP plus our
-`grub.cfg` except FAT timestamps (tests: `testing/offline/iso-unowned-test.sh`).
-Not detectable by design: encrypted, XOR-ed or custom-encoded data and raw
-deflate streams without a header; the installed system still trusts only the
+scan, and on the default path (and `--full`) requires the ESP to equal
+upstream's ESP plus our `grub.cfg` except FAT timestamps (tests:
+`testing/offline/iso-unowned-test.sh`). ISO9660 volume-descriptor sectors
+are exempted from the unowned-bytes ISO9660-magic check only when they are
+members of a structurally validated descriptor set (type, CD001, version 1,
+terminated, starting with a PVD); a `CD001` string anywhere else still
+fails (R7-B1). Mid-file squashfs, lz4 and erofs magics fail in whole files as well as in gaps; mid-file zlib streams are
+carved in `--gaps` and in files up to 64 MiB (P-L13). Nesting that still
+has decodable structure, armor or carve magic when the depth limit (6) is
+reached fails closed (P-L15).
+Not detectable by design: encrypted, XOR-ed or custom-encoded data, raw
+deflate streams without a header, and base32 or ascii85 encodings; the
+installed system still trusts only the
 keys the kickstart `%post` pins (exact set).
 
 - `scripts/sign-rpms.sh DIR` (build machine only): `rpmsign --addsign` every
@@ -284,7 +296,8 @@ Build a QA test ISO:
    `avalonos.testseed=1` to the installed system.
 2. Output: `out/AvalonOS-netinst-x86_64-TEST.iso`. Never publish it, and
    never upload a test repo as `avalonos-signed-repo.tar`.
-3. Check it with `AVALONOS_TEST_BUILD=1 scripts/verify-iso.sh out/AvalonOS-netinst-x86_64-TEST.iso`.
+3. Check it with `AVALONOS_TEST_BUILD=1 scripts/verify-iso.sh out/AvalonOS-netinst-x86_64-TEST.iso`
+   (the default is the full check; pass `--quick` only for the weaker path).
 4. Seed a user: `tailwhip --user NAME` (installed with AvalonOS, or
    `scripts/tailwhip`) writes `avalonos-seed.conf` (yescrypt hash, never
    plaintext). Put it on a disk labelled `AVTESTSEED` and add

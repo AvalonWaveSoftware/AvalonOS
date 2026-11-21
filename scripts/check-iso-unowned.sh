@@ -87,7 +87,90 @@ with open(iso, "rb") as f:
             open(os.path.join(out, f"gap-{a:012d}-{b - a}"), "wb").write(d)
 print(f"{len(gaps)} unowned ranges, {total} bytes, {len(os.listdir(out))} not all-zero")
 PY
-if "$ROOT/scripts/check-key-isolation.sh" --gaps "$T/gaps" > "$T/ki" 2>&1; then
+# R7-B1: exempt only this ISO's structurally validated volume-descriptor
+# sectors (type, CD001, version 1, a terminated set starting with a PVD).
+# xorriso 1.5.8 with partition_offset writes additional valid sets (e.g. at
+# LBA 64-66 and 80-81) whose PVDs are not byte-identical to the set at 16.
+# This is not a wider LBA bound: ISO9660 magic elsewhere still fails.
+python3 - "$ISO" "$T/vd-offsets" <<'PY'
+import os, sys
+SECTOR, SCAN_LBAS, TYPES = 2048, 1024, {0, 1, 2, 3, 255}
+iso, outp = sys.argv[1], sys.argv[2]
+iso_size = os.path.getsize(iso)
+iso_lbas = iso_size // SECTOR
+
+def be32(s, off):
+    le, be = int.from_bytes(s[off:off+4], "little"), int.from_bytes(s[off+4:off+8], "big")
+    return le if le == be else None
+
+def be16(s, off):
+    le, be = int.from_bytes(s[off:off+2], "little"), int.from_bytes(s[off+2:off+4], "big")
+    return le if le == be else None
+
+def is_desc(s):
+    return len(s) == SECTOR and s[1:7] == b"CD001\x01" and s[0] in TYPES
+
+def is_pvd(s, expect_vol_id=None):
+    if not is_desc(s) or s[0] != 1:
+        return False
+    vol_space, block_size = be32(s, 80), be16(s, 128)
+    if vol_space is None or vol_space < 17 or block_size != 2048:
+        return False
+    if vol_space * SECTOR > iso_size:
+        return False
+    if expect_vol_id is not None and s[40:72] != expect_vol_id:
+        return False
+    rlen = s[156]
+    if rlen < 34 or 156 + rlen > SECTOR or (s[156 + 25] & 2) == 0:
+        return False
+    extent, path_size, vss = be32(s, 156 + 2), be32(s, 132), be16(s, 120)
+    if extent is None or extent >= vol_space or path_size is None or path_size == 0 or vss is None or vss < 1:
+        return False
+    return True
+
+def read_set(f, start_lba, expect_vol_id=None):
+    sectors = []
+    for i in range(32):
+        lba = start_lba + i
+        if lba >= iso_lbas:
+            return None
+        f.seek(lba * SECTOR)
+        s = f.read(SECTOR)
+        if i == 0:
+            if not is_pvd(s, expect_vol_id):
+                return None
+        elif not is_desc(s):
+            return None
+        sectors.append(lba)
+        if s[0] == 255:
+            return sectors if i > 0 else None
+    return None
+
+allowed, seen = [], set()
+with open(iso, "rb") as f:
+    principal = read_set(f, 16)
+    if not principal:
+        sys.exit(0)
+    f.seek(16 * SECTOR)
+    vol_id = f.read(SECTOR)[40:72]
+    seen.add(16)
+    sets = [principal]
+    last = min(SCAN_LBAS, max(16, iso_lbas - 1))
+    for lba in range(16, last + 1):
+        if lba in seen:
+            continue
+        st = read_set(f, lba, vol_id)
+        if st:
+            sets.append(st)
+            seen.add(lba)
+for st in sets:
+    for lba in st:
+        allowed.append(lba * SECTOR + 1)  # absolute offset of CD001
+open(outp, "w").write("\n".join(str(o) for o in allowed) + ("\n" if allowed else ""))
+print(f"validated volume-descriptor sectors: {len(allowed)} CD001 offsets in {len(sets)} set(s)")
+PY
+[ -s "$T/vd-offsets" ] || { echo "check-iso-unowned: FAIL no validated ISO9660 volume descriptor set at LBA 16 in $ISO" >&2; exit 1; }
+if AV_GAP_VD_OFFSETS="$T/vd-offsets" "$ROOT/scripts/check-key-isolation.sh" --gaps "$T/gaps" > "$T/ki" 2>&1; then
     echo "check-iso-unowned: ok   unowned ISO bytes (outside every file and the ESP) carry no foreign key in any encoding"
 else
     echo "check-iso-unowned: FAIL unowned ISO bytes:" >&2; sed 's/^/    /' "$T/ki" >&2; fail=1

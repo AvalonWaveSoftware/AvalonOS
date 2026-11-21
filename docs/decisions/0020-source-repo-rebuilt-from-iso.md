@@ -35,8 +35,10 @@ upstream instead of committing 1.2 GB.
   `packages.inc` (drift). The kickstart `%packages` body is now generated
   from `packages.inc` (`@AVALONOS_PACKAGES@`), so the two cannot drift.
 - Docs updated for the repo layout and the unprivileged build.
-- Admin password hash comes from `AVALONOS_ADMIN_PW_HASH`,
+- Admin password hash originally came from `AVALONOS_ADMIN_PW_HASH`,
   `kickstart/AvalonOS.local.ks`, or an explicit insecure opt-in.
+  Superseded 2026-11-14 9:40 CT: root is locked and the user is created
+  at first boot; the repository secret is no longer read or required.
 - Upstream verification pins Fedora's 44 key in `keys/fedora-44.gpg`.
 
 ## Reconstructed (not recovered)
@@ -55,6 +57,8 @@ directories (SHAs survive in `docs/packages/nvim-plugins.md`).
 
 ## Consequences
 
-The shipped ISO's admin password hash is visible to anyone who has the
-ISO; treat that password as public and rotate it. New releases need the
-`AVALONOS_ADMIN_PW_HASH` repository secret.
+The reconstructed Sep 13 ISO's admin password hash is visible to anyone
+who has that ISO; treat that password as public and rotate it. As of
+2026-11-14 9:40 CT, new releases no longer embed an admin password hash
+and do not use the `AVALONOS_ADMIN_PW_HASH` repository secret (root is
+locked; the user is created at first boot).

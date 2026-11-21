@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # Structural checks on a built AvalonOS ISO.
-#   verify-iso.sh ISO           boot layout, GRUB entries (ISO9660 + ESP), payload
-#   verify-iso.sh --full ISO    also sha256-compare every other file to upstream
-#                               (extracts both images; needs ~2.5 GB in $TMPDIR)
+#   verify-iso.sh ISO           default is the full check (same as --full)
+#   verify-iso.sh --full ISO    alias for the default: also sha256-compare every
+#                               other file to upstream (extracts both images;
+#                               needs ~2.5 GB in $TMPDIR)
+#   verify-iso.sh --quick ISO   weaker path: skip the upstream file-by-file and
+#                               ESP identity compare (still does the raw ISO/ESP
+#                               key scan and the unowned-bytes decoding scan)
 # Release ISO unless AVALONOS_TEST_BUILD=1 (QA test ISO). A release ISO FAILS
 # on any test-seed artifact (decision 2026-11-14 11:31 CT): the
 # avalonos-testseed RPM, seed strings in the kickstarts, GRUB configs or
@@ -18,15 +22,24 @@
 # repo (nothing else); packages.inc, updates.img and both kickstarts must be
 # byte-identical to what this tree builds; the raw ISO and ESP images are
 # scanned too (key material outside any file), and every byte outside the
-# files gets the full decoding scan (check-iso-unowned.sh). --full additionally proves
+# files gets the full decoding scan (check-iso-unowned.sh). The default (and --full)
+# additionally proves
 # every other file, directory, link and the ESP identical to upstream (GRUB
 # configs = upstream + our patches, eltorito.img = upstream except the
 # boot-info-table/grub2-boot-info bytes xorriso rewrites).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$ROOT/upstream.env"
-FULL=0; [ "${1:-}" = --full ] && { FULL=1; shift; }
-ISO="${1:?usage: verify-iso.sh [--full] ISO}"
+FULL=1
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --full)  FULL=1; shift;;
+        --quick) FULL=0; shift;;
+        -*) echo "usage: verify-iso.sh [--full|--quick] ISO" >&2; exit 2;;
+        *) break;;
+    esac
+done
+ISO="${1:?usage: verify-iso.sh [--full|--quick] ISO}"
 UP="${AVALONOS_CACHE:-$ROOT/cache}/$UPSTREAM_ISO"
 TEST_BUILD="${AVALONOS_TEST_BUILD:-0}"
 case "$TEST_BUILD" in 0|1) ;; *) echo "verify-iso: AVALONOS_TEST_BUILD must be 0 or 1" >&2; exit 2;; esac
@@ -131,7 +144,7 @@ chk "/ks.cfg + /ks-erase-all.cfg pin only $AV_KEY_NAME ($AV_KEY_PIN)" bash -c '
 # Whole ISO, whole ESP and the unpacked updates.img, every file by content
 # (not just /avalonos): no file, key, pin or signature of the other kind's key.
 # Upstream's embedded images (install.img, initrd) are checked byte-for-byte
-# against upstream by --full, which build-iso.sh always runs.
+# against upstream by the default path (and --full), which build-iso.sh always runs.
 mkdir -p "$T/isoall" "$T/espall"
 # Extraction must be complete: both extractors must succeed and the extracted
 # file counts must equal the ISO's and the ESP's own listings.
@@ -151,7 +164,10 @@ else
 fi
 # P-L12 (Codex review finding 1): ISO bytes that belong to no file (system
 # area, directory records, slack, anything appended) get the full decoding
-# scan; --full also proves the ESP byte-identical to upstream's + grub.cfg.
+# scan; the default path (and --full) also proves the ESP byte-identical to
+# upstream's + grub.cfg. --quick skips that ESP identity compare; the raw
+# ISO/ESP key scan still runs and will catch foreign key material in ESP
+# free space (P-L14: the default path also caught a gzip'd TEST key there).
 unowned_up=(); if [ "$FULL" = 1 ] && [ -f "$UP" ]; then unowned_up=("$UP"); fi
 if "$ROOT/scripts/check-iso-unowned.sh" "$ISO" "${unowned_up[@]}" > "$T/unowned.log" 2>&1; then
     ok "unowned ISO bytes carry no other-kind key in any encoding$( [ "$FULL" = 1 ] && echo '; ESP == upstream ESP + grub.cfg (only FAT timestamps differ)')"

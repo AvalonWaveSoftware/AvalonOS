@@ -51,5 +51,37 @@ mkesp; SOURCE_DATE_EPOCH=1791756588 MTOOLS_SKIP_CHECK=1 mcopy -i "$T/esp.img" "$
 rejectw "E3 extra file in the ESP" 'differs from the rebuilt ESP' "$CU" --esp "$T/esp.img" "$T/up-esp.img" "$T/grub.cfg"
 mkesp; cp "$T/grub.cfg" "$T/grub2.cfg"; echo "# x" >> "$T/grub2.cfg"
 rejectw "E4 ESP grub.cfg differs from the ISO9660 one" 'differs from the rebuilt ESP|size' "$CU" --esp "$T/esp.img" "$T/up-esp.img" "$T/grub2.cfg"
+# R7-B1: xorriso 1.5.8 boot-replay + appended ESP writes extra validated
+# volume-descriptor sets (typically LBA 16-18, 32-33, 64-66, 80-81). Those
+# must pass; a bare CD001 injected outside the validated sectors must fail.
+esp_type="$(X -indev "$UP" -report_system_area plain 2>/dev/null | awk '$1=="GPT" && $2=="type" && $5=="2" {print $6}')"
+if [ -n "$esp_type" ] && [ -s "$T/up-esp.img" ] && \
+   env -u SOURCE_DATE_EPOCH xorriso -indev "$UP" -outdev "$T/replay.iso" \
+      -boot_image any replay \
+      -append_partition 2 "$esp_type" "$T/up-esp.img" \
+      -boot_image any efi_path=--interval:appended_partition_2:all:: \
+      -commit_eject all >"$T/replay.log" 2>&1; then
+    if python3 - "$T/replay.iso" <<'PY'
+import sys
+p = sys.argv[1]
+with open(p, "rb") as f:
+    f.seek(80 * 2048)
+    s = f.read(2048)
+if not (s[0] == 1 and s[1:7] == b"CD001\x01"):
+    print("note: replay ISO has no PVD at LBA 80; U7 still checks unowned bytes")
+    sys.exit(0)
+print("replay ISO has validated-style PVD at LBA 80")
+PY
+    then
+        accept "U7 xorriso replay ISO (descriptor sets incl. LBA 64/80 if present) unowned bytes clean" rel "$CU" "$T/replay.iso"
+        printf 'xxCD001yy' >> "$T/replay.iso"
+        rejectw "U8 CD001 injected outside validated descriptor sectors still fails" 'ISO9660 data at offset' rel "$CU" "$T/replay.iso"
+    else
+        nok "U7 replay ISO PVD probe failed"
+    fi
+else
+    nok "U7 could not build a xorriso replay ISO"; sed 's/^/      /' "$T/replay.log" 2>/dev/null | tail -8
+fi
+rm -f "$T/replay.iso"
 echo "iso-unowned-test: $pass ok, $fails failed"
 [ "$fails" = 0 ]

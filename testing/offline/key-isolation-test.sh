@@ -339,6 +339,34 @@ fresh "$REL"; (cd "$T/cz" && zip -q -P pw "$T/r/enc.zip" b.txt)
 rejectw "V15 encrypted zip entry fails closed" 'encrypted' rel "$KI" "$T/r"
 fresh "$REL"; (cd "$T/sq" && 7z a -bd "$T/in.7z" k >/dev/null); { head -c 5000 /dev/urandom; cat "$T/in.7z"; } > "$T/r/fw.bin"
 rejectw "V16 7z archive embedded mid-file fails closed" '7z data at offset' rel "$KI" "$T/r"
+# P-L13: uninspectable magics mid-file (not only at offset 0 / --gaps)
+fresh "$REL"; { head -c 4096 /dev/urandom; printf '\x04\x22\x4d\x18'; head -c 512 /dev/zero; } > "$T/r/x.lz4"
+rejectw "L3b lz4 frame embedded mid-file: fail closed" 'lz4 data at offset' rel "$KI" "$T/r"
+# mid-file squashfs (L4 is squashfs at offset 0)
+fresh "$REL"; mkdir -p "$T/sq2"; cp "$K" "$T/sq2/k"
+mksquashfs "$T/sq2" "$T/sq-mid.img" -quiet -noappend >/dev/null 2>&1
+{ head -c 4096 /dev/urandom; cat "$T/sq-mid.img"; } > "$T/r/fs.img"
+rejectw "L4b squashfs image embedded mid-file: fail closed" 'squashfs data at offset' rel "$KI" "$T/r"
+# P-L13: zlib mid-file (V6 is zlib at start)
+fresh "$REL"
+python3 - "$K" "$T/r/mid.zlib" <<'PY'
+import sys, zlib
+from pathlib import Path
+key = Path(sys.argv[1]).read_bytes()
+Path(sys.argv[2]).write_bytes(b"X"*4096 + zlib.compress(key))
+PY
+rejectw "V17 zlib stream embedded mid-file carrying the TEST key" 'zlib\].*material|@.*\[zlib\]' rel "$KI" "$T/r"
+# P-L15: base64(gzip(.)) nested 4 times must fail closed (previously passed)
+fresh "$REL"
+python3 - "$K" "$T/r/nest.b64" <<'PY'
+import sys, gzip, base64
+from pathlib import Path
+blob = Path(sys.argv[1]).read_bytes()
+for _ in range(4):
+    blob = base64.b64encode(gzip.compress(blob))
+Path(sys.argv[2]).write_bytes(blob)
+PY
+rejectw "V18 base64(gzip(.)) nested 4 times fails closed at the depth limit" 'encoding nest exceeds depth|cannot be inspected|material' rel "$KI" "$T/r"
 fresh "$REL"; gpg --batch --homedir "$(mktemp -d -p "$T")" --dearmor < "$ROOT/keys/RPM-GPG-KEY-avalonos" > "$T/r/vendor.asc"
 accept "P10 production key as a BINARY key file named .asc (not a signature), release mode" rel "$KI" "$T/r"
 echo "key-isolation-test: $pass ok, $fails failed"

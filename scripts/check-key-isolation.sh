@@ -38,14 +38,15 @@
 #      streams), tar, cpio (newc/crc/odc, concatenated archives), zip/jar
 #      (also appended to another file), ar/deb and RPM are unpacked and
 #      every member is scanned like a file (up to 6 nested levels, 1 GiB per
-#      layer). gzip/xz/zstd/bzip2 streams embedded anywhere in a file are
+#      layer; a nest that still has decodable structure, armor or carve magic
+#      when the depth limit is reached fails closed). gzip/xz/zstd/bzip2 streams embedded anywhere in a file are
 #      carved out and scanned. Formats that cannot be inspected (squashfs,
 #      erofs, cramfs, ISO9660, FAT, ext*, 7z, rar, cab, xar, lz4, lzip, lzop,
 #      compress, LUKS, disk images, encrypted zip) or a layer that cannot be
 #      read completely FAIL -- unless the file is byte-identical (sha256) to
 #      a file of the pinned upstream Fedora ISO (upstream-netinst.sha256,
-#      generated from the ISO pinned in upstream.env; verify-iso --full also
-#      proves those files identical to upstream).
+#      generated from the ISO pinned in upstream.env; verify-iso (default, also
+#      --full) proves those files identical to upstream; --quick skips that).
 # No path is ever passed through a shell.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -198,6 +199,15 @@ UNINSPECTABLE = [   # (name, offset, magic)
 # unless the whole file is a pinned upstream file.
 EMBED_BAD = {b"7z\xbc\xaf\x27\x1c": "7z", b"Rar!\x1a\x07": "rar", b"\x89LZO\x00\r\n\x1a\n": "lzop",
              b"LUKS\xba\xbe": "LUKS", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1": "MS compound file", b"vhdxfile": "vhdx"}
+# P-L13: these distinctive container magics fail at any offset in whole
+# files, not only in --gaps. Do not promote short/common UNINSPECTABLE
+# magics (e.g. dmg "koly", binary cpio) — they false-positive in text and
+# binaries. ISO9660 stays gaps-only. --gaps still uses the full list.
+EMBED_BAD.update({
+    b"hsqs": "squashfs", b"sqsh": "squashfs",
+    b"\x04\x22\x4d\x18": "lz4", b"\x02\x21\x4c\x18": "lz4",
+    b"\xe2\xe1\xf5\xe0": "erofs",
+})
 if GAPS:   # unowned ISO bytes are no file format: any uninspectable format's magic in them fails
     EMBED_BAD.update({m: n for n, off, m in UNINSPECTABLE if len(m) >= 4})
 CARVE = dict(COMPRESS); CARVE["zip-local"] = b"PK\x03\x04"
@@ -312,7 +322,11 @@ def decode_stream(chunks, kind, label, text_ok, depth, fatal):
 def scan_blob(blob, label, text_ok, depth):
     """Decoded run content: check it, and inspect it as a file if it has structure."""
     if (why := material(blob)): raise Found(f"{label}: foreign public-key material ({why})")
-    if depth < DEPTH and (detect(blob[:65536]) or any(m in blob for m in CARVE.values()) or b"-----BEGIN PGP" in blob):
+    structured = (detect(blob[:65536]) or any(m in blob for m in CARVE.values())
+                  or any(m in blob for m in EMBED_BAD) or b"-----BEGIN PGP" in blob)
+    if structured:
+        # P-L15: do not skip remaining structure at the depth limit (fail closed
+        # inside scan_file when depth exceeds DEPTH).
         f, p = spill("dec.")
         with f: f.write(blob)
         budget(len(blob))
@@ -359,7 +373,9 @@ def scan_file(path, label, text_ok, depth=0, fatal=True, payload_rel=None):
     or decoded, not yet shown to be a real stream): format errors are then
     ignored; findings always FAIL."""
     if depth > DEPTH:
-        if fatal: bad(f"{label}: more than {DEPTH} nested containers; cannot be inspected")
+        # P-L15: fail closed whenever the depth limit is exceeded, including
+        # speculative (fatal=False) layers. Remaining structure must not be skipped.
+        bad(f"{label}: encoding nest exceeds depth {DEPTH}; cannot be inspected")
         return
     sha = hashlib.sha256(); head = b""; prev = b""; base = 0; carves = set(); embed_bad = set()
     runs = [Runs("base64", B64RUN_CH), Runs("hex", HEXRUN_CH)]
@@ -397,9 +413,19 @@ def scan_file(path, label, text_ok, depth=0, fatal=True, payload_rel=None):
         bad(f"{label}: {e}; cannot be inspected"); return
     if RAW: return
     if depth == 0 and sha.hexdigest() in TRUSTED: return   # Fedora's pinned bytes: K2/K3 above is enough
-    if GAPS and depth == 0 and os.path.basename(path).startswith("gap-000000032768-"):
-        # this ISO's own volume descriptor set (sectors 16-79) is expected there, nowhere else
-        embed_bad = {(o, n) for o, n in embed_bad if not (n == "ISO9660" and o < 64 * 2048)}
+    if GAPS and depth == 0:
+        # R7-B1: ISO9660 magic is allowed only at CD001 offsets of structurally
+        # validated volume-descriptor sectors (AV_GAP_VD_OFFSETS). Gap filenames
+        # are gap-<absolute-start>-<length>; no wider LBA bound.
+        vd_ok = set()
+        _vdp = os.environ.get("AV_GAP_VD_OFFSETS")
+        if _vdp:
+            with open(_vdp, encoding="ascii") as _vdf:
+                vd_ok = {int(l) for l in _vdf if l.strip()}
+        gm = re.match(r"gap-(\d+)-", os.path.basename(path))
+        start = int(gm.group(1)) if gm else None
+        embed_bad = {(o, n) for o, n in embed_bad
+                     if not (n == "ISO9660" and start is not None and (start + o) in vd_ok)}
     for off, name in sorted(embed_bad)[:1]:
         bad(f"{label}: {name} data at offset {off} (not inspectable, not a pinned upstream file); cannot be inspected")
     kind = detect(head)
@@ -433,6 +459,31 @@ def scan_file(path, label, text_ok, depth=0, fatal=True, payload_rel=None):
         skip = rpm_payload_offset(path) if kind == "rpm" else None   # inspected by check_rpm (with its doc rules)
         for off in sorted(carves):
             if off != skip: carve(path, off, label, text_ok, depth)
+        # P-L13: mid-file zlib has no unique magic. Carve in --gaps and in
+        # files up to 64 MiB (larger files still get start-of-file zlib via
+        # detect). Only headers that trial-inflate to >= 16 bytes are carved.
+        zmax = 64 << 20
+        # RPM payloads are unpacked and scanned as files; skip the RPM wrapper.
+        if kind != "rpm" and (GAPS or os.path.getsize(path) <= zmax):
+            with open(path, "rb") as zf:
+                zdata = zf.read(zmax)
+            zoffs = []
+            for zm in re.finditer(b"[\x08\x18\x28\x38\x48\x58\x68\x78]", zdata):
+                i = zm.start()
+                if i == 0 or i + 1 >= len(zdata) or not is_zlib(zdata[i:i+2]):
+                    continue
+                try:
+                    zd = zlib.decompressobj(15)
+                    zout = zd.decompress(zdata[i:i+4096], 64)
+                except zlib.error:
+                    continue
+                if len(zout) >= 16:
+                    zoffs.append(i)
+                if len(zoffs) > MAXCARVE:
+                    bad(f"{label}: more than {MAXCARVE} embedded zlib streams; cannot be inspected"); return
+            for off in zoffs:
+                if off != skip:
+                    decode_stream(file_chunks(path, off), "zlib", f"{label}@{off}", text_ok, depth, False)
     except Over as e:
         bad(f"{label}: {e}; cannot be inspected")
 
