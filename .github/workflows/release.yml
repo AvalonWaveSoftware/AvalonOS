@@ -89,8 +89,7 @@ jobs:
 
       - name: Build ISO
         # No credential: root is locked and the user is created at first boot
-        # (decision 2026-11-14 9:40 CT); the AVALONOS_ADMIN_PW_HASH secret is
-        # no longer read and can be deleted from the repository settings.
+        # (decision 2026-11-14 9:40 CT). The build reads no repository secret.
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           [ "$AVALONOS_TEST_BUILD" = 0 ] || { echo "::error::release builds must not set AVALONOS_TEST_BUILD"; exit 1; }
