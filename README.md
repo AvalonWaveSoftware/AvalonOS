@@ -115,6 +115,12 @@ and troubleshooting are in [How-to-Install.md](How-to-Install.md).
 On an installed system, user documentation is also copied to
 `~/AvalonOS-Docs`.
 
+## Contributing
+
+"I dunno know, make a pull request or something man, I don't even know why you're here"
+
+[Open a pull request](https://github.com/AvalonWaveSoftware/AvalonOS/pulls)
+
 ## License
 
 AvalonOS is licensed under the [Apache License 2.0](LICENSE).
