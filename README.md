@@ -1,162 +1,131 @@
 # AvalonOS
 
-Minimal custom desktop environment on **Fedora 44**. Official Fedora
-packages plus RPM Fusion **only** for NVIDIA, with one first-boot
-exception: Flathub is added after install to install Obsidian
-(ADR 0021). The installer ISO stays RPM-signed only. This repository is the
-source for the AvalonOS netinst installer ISO. Documentation for the daily
-user is also copied to `~/AvalonOS-Docs` on installed machines.
+AvalonOS is a lean desktop Linux distribution from
+[AvalonWave Software](https://avalonwavesoftware.com). It is built on
+**Fedora 44** so you can rely on Fedora packages, and it takes some
+Omarchy ideas into a smaller environment. The session is Wayland-only
+and uses the **niri** compositor (scrollable tiling). The default
+config is set up for people coming from i3: stock i3-style keybindings
+for the terminal, launcher, closing a window, focus and move, and
+numbered workspaces, plus i3-style tabbed stacking (one window visible
+in a column, the others as tabs).
 
-> This tree was rebuilt in October 2026 from the shipped ISO
-> (`AvalonOS-netinst-x86_64.iso`, sha256 `4205f5d6…db30f3`) after the
-> original `/root/AvalonOS` git tree was lost. Overlay, kickstart and GRUB
-> changes are byte-exact; some helper scripts are reconstructions (ADR 0020).
+> [!IMPORTANT]
+> **You need an internet connection to install AvalonOS.** The ISO is a net install: it downloads packages from Fedora and RPM Fusion mirrors while it installs. Plug in wired Ethernet before you start, since it's the most reliable option.
 
-ISO installs: root is locked (`rootpw --lock`) and the daily user (uid 1000,
-`wheel`) is created on first boot by `avalonos-make-user`. No password or
-hash is on the ISO.
+![Installer disk picker listing /dev/vda, a 25 GiB virtio disk.](docs/screenshots/installer-disk-picker.png)
 
-## Locked stack
+The installer disk picker. The chosen disk is erased completely; other disks are not touched.
 
-Wayland, **niri** 26, **xwayland-satellite**, **greetd** + **tuigreet**
-(wrapper `/usr/local/bin/avalonos-greeter`), **waybar**, **rofi** 2,
-**alacritty**, **neovim** (`vi` → nvim), **dunst**, PipeWire,
-NetworkManager + **iwd**, **NetworkManager-libreswan**, **bluez** +
-**blueman**, **Firefox**, **Dolphin**, **pavucontrol-qt**, **flatpak**
-(Obsidian from Flathub on first boot when the network is up; an offline
-install gets it later, ADR 0021). Session Exec is
-`/usr/local/bin/avalonos-session` (starts `niri.service`). niri does not
-pin a GPU or connector. NVIDIA (`akmod-nvidia`) is for PRIME offload,
-not the compositor.
+![First-boot create-your-user screen, with empty username, password, and confirm fields.](docs/screenshots/firstboot-create-user.png)
 
-Palette: navy `#0A1628`, neon `#39FF14`, purple-red `#C2185B`.
-Tokens: `overlay/usr/share/AvalonOS/palette.env`.
-Wallpaper: `wallpaper.png` via **swaybg**. Greeter is TTY tuigreet (no image).
+First boot: create your user. Root stays locked; admin is via sudo.
 
-## Layout
+## Features
 
-| Path | What |
-|---|---|
-| `kickstart/AvalonOS.ks` | kickstart template (`@AVALONOS_*@` placeholders, no hashes) |
-| `kickstart/packages.inc` | `%packages` list; inlined into the kickstart at build time |
-| `overlay/` | DE files, packaged into the `avalonos-*` RPMs |
-| `packaging/rpm/` | RPM specs (`avalonos`, `avalonos-nvim-parsers`, `avalonos-nvim-lsp`), preset, rpmlintrc |
-| `installer/updates/` | installer repo files (`gpgcheck=1`, pinned keys) packed into `/avalonos/updates.img` (P-M1r) |
-| `testing/testseed/` | QA test builds only (`AVALONOS_TEST_BUILD=1`): first-boot test seed; never in a release |
-| `packaging/overlay.manifest` | legacy (golden tarball, no longer used by the ISO build) |
-| `boot/` | GRUB patches against the upstream `grub.cfg` (BIOS + EFI/ESP) |
-| `scripts/` | build, fetch, tarball, credential and reference-box helpers |
-| `upstream.env` | pinned upstream Fedora ISO (name, size, sha256, mirrors) |
-| `keys/` | Fedora 44 key (verifies the upstream CHECKSUM), RPM Fusion keys, `PINNED-FINGERPRINTS` |
-| `docs/` | ADRs, overlay map, ISO notes, hardware, package logs |
-| `.github/workflows/release.yml` | CI build, attaches the ISO to a GitHub Release |
+- Fedora 44 base. Official Fedora packages, with RPM Fusion used only
+  for the NVIDIA driver (`akmod-nvidia`).
+- Wayland session on niri, with X11 applications through
+  xwayland-satellite. Press Super+Shift+/ for the on-screen keybind
+  overlay.
+- i3-style default binds (Super+Return terminal, Super+D launcher,
+  Super+Shift+Q close, Super+j/k/l/; or arrows to focus, Super+Shift
+  plus those keys to move, Super+1…0 workspaces) and tabbed stacking.
+  niri is still a scrollable-tiling compositor, not an i3 clone.
+- AvalonOS RPMs and repository metadata are signed. The installer
+  checks signatures during installation.
+- Root is locked. The daily user is created on first boot. The SSH
+  server is not installed.
+- The default installer entry offers a disk picker and asks you to
+  type the chosen disk's name before erasing it.
+- Desktop tools include Firefox, Dolphin, Alacritty, Neovim, Waybar,
+  Rofi, PipeWire, and NetworkManager with iwd. The network menu can
+  also set up a Libreswan IPsec VPN with a pre-shared key or a
+  certificate already in the NSS database. IKEv2 EAP
+  username/password is unsupported.
+- Dolphin is the file manager, picked so AvalonOS can build on KDE's
+  ongoing work on network sharing.
+- When a network route is up on first boot, Flathub is added and
+  Obsidian is installed. An offline install still reaches login and
+  gets Obsidian later. The ISO itself stays RPM-signed only.
+- `bluez` and `blueman` are installed; `bluetooth.service` is disabled
+  by default. Enable the unit if you want Bluetooth.
+- SELinux is Enforcing.
 
-Not in git: the upstream ISO (`cache/`), build output (`build/`, `out/`),
-generated RPMs, and any `avalonos-seed.conf` test seed (QA test builds
-only; see docs/iso.md "Test builds").
+## Get it
 
-## Rules
+> [!WARNING]
+> **Internet connection required.** The AvalonOS ISO is a net install: it downloads packages from Fedora and RPM Fusion mirrors while it installs, so you need a working internet connection during installation. A wired Ethernet connection is the most reliable option.
 
-- `dnf --setopt=install_weak_deps=False`
-- Overlay is source of truth; live configs must match it
-- SELinux Enforcing
-- No QtGreet, labwc, or vendor DFL/WayQt
+The current release is **[v0.1.0-9](https://github.com/AvalonWaveSoftware/AvalonOS/releases/tag/v0.1.0-9)**
+(published 25 November 2026, 9:59 PM CT, America/Chicago).
 
-## Apply overlay (this machine)
+Download these two files into the same directory:
 
-```bash
-sudo scripts/apply-overlay.sh
-```
+- [AvalonOS-netinst-x86_64.iso](https://github.com/AvalonWaveSoftware/AvalonOS/releases/download/v0.1.0-9/AvalonOS-netinst-x86_64.iso)
+  (about 1.24 GB)
+- [AvalonOS-netinst-x86_64.iso.sha256](https://github.com/AvalonWaveSoftware/AvalonOS/releases/download/v0.1.0-9/AvalonOS-netinst-x86_64.iso.sha256)
 
-Copies overlay files without SELinux context, then `restorecon`.
-
-## ISO
-
-The installer image is **not** in git. Get `AvalonOS-netinst-x86_64.iso`
-from **GitHub Releases**.
-
-**[How to Install](How-to-Install.md)**: USB (BIOS and UEFI), first
-login, credentials.
-
-Remaster of Fedora 44 Everything netinst (ADR 0019). Build as an ordinary
-user (no root, no loop mounts) on Fedora or any Linux with `xorriso`,
-`mtools`, `gnupg2`/`gpgv`, `curl`, `patch`, `tar`, `rpm-build`,
-`createrepo_c` and `gcc` (see `docs/iso.md`; a signed AvalonOS repo is required, see below):
+Then verify the ISO:
 
 ```bash
-scripts/build-iso.sh
+sha256sum -c AvalonOS-netinst-x86_64.iso.sha256
 ```
 
-Output: `out/AvalonOS-netinst-x86_64.iso` and `.sha256`. The first run
-downloads the upstream ISO (1.2 GB) into `cache/` and verifies it against
-Fedora's signed CHECKSUM and `upstream.env`.
+The expected SHA-256 is:
 
-Install needs network. The kickstart includes RPM Fusion and builds
-`akmod-nvidia` in `%post` (fails closed: nouveau stays if the build fails).
-**NVIDIA machines: turn Secure Boot off in the firmware before installing**:
-the akmod driver is unsigned and will not load with Secure Boot on; AvalonOS
-then stays on nouveau (see [How to Install](How-to-Install.md) §3).
-The default boot entry asks which disk to use and erases only that disk
-after you type its name; only the separate "ERASES ALL DISKS" entry wipes
-unattended.
+```text
+8d1a04a64d6e7cc178a54c6cf6b8f11e82bac4c013d40f998f7e8cf4e9dd7542
+```
 
-AvalonOS RPMs and repo metadata are signed (key fingerprint
-`F0AA82E5FEB779364658A18D96508B1357FDAB48`, public key
-`keys/RPM-GPG-KEY-avalonos`); the private key stays on the build machine, so
-`build-iso.sh` needs `AVALONOS_SIGN=1` there or `AVALONOS_SIGNED_REPO=DIR`
-elsewhere (see `docs/iso.md`). QA test builds (`AVALONOS_TEST_BUILD=1`) use a
-separate TEST signing key (`keys/RPM-GPG-KEY-avalonos-test`) that no release
-ever ships or trusts.
+A checksum downloaded with the ISO detects corruption. It does not by
+itself prove who published the file. The release also includes
+`SHA256SUMS` and the public key `RPM-GPG-KEY-avalonos` (fingerprint
+`F0AA82E5FEB779364658A18D96508B1357FDAB48`). Check that fingerprint
+before importing the key.
 
-Releases: sign on the build machine and attach the signed repo as
-`avalonos-signed-repo.tar` to the release, then push the `v*` tag;
-`.github/workflows/release.yml` builds in a `fedora:44` container (no signing
-key), verifies the repo against the pinned key, runs rpmlint, and uploads the
-ISO + `.sha256` to the Release for that tag. Release
-assets may be up to 2 GB each; the ISO is about 1.24 GB.
+The image is a remaster of the Fedora 44 Everything netinst ISO.
+Installation needs a network connection (see the note above).
 
-## Session keybinds (niri)
+How to write the image to a USB stick (BIOS and UEFI), first login,
+and troubleshooting are in [How-to-Install.md](How-to-Install.md).
 
-| Key | Action |
-|---|---|
-| Super+Return | alacritty |
-| Super+D | `avalonos-launcher` (rofi: search + category tabs) |
-| Super+Shift+Q | close window |
-| Super+j/k/l/; or arrows | focus (left / down / up / right) |
-| Super+Shift+j/k/l/; or arrows | move |
-| Super+1…0 | workspace 1–10 |
-| Super+Shift+1…0 | move column to workspace |
-| Super+H | expel window to a new column |
-| Super+V or Super+, | stack window to the right (tabbed, one visible) |
-| Super+Shift+V or Super+Shift+, | consume into column (all visible) |
-| Super+. | expel one window from the stack |
-| Super+Shift+. | expel from column |
-| Super+S / Super+Shift+S | stack all / consume all into a column |
-| Super+W / Super+Shift+W | expel all from stack / column |
-| Super+F | fullscreen |
-| Super+Shift+F | maximize column |
-| Super+Shift+Space | toggle floating |
-| Super+Space | focus floating ↔ tiling |
-| Super+R | cycle column width |
-| Super+Shift+C | reload niri config |
-| Super+Shift+E | exit niri |
-| Super+Shift+X | lock (swaylock) |
-| Print / Super+Print | screenshot full / region (grim, slurp) |
+## Before you install
 
-Waybar (right): mpris · HW stats · btop · brightness (lightbulb; tooltip
-“brightness”) · volume (left-click **pavucontrol-qt**, right-click mute) ·
-network (Wi-Fi picker, Bluetooth, connections) · battery · tray.
-Icons: **Candy**.
+- Connect to the internet first, wired Ethernet if you can. The
+  installer can't finish without it.
+- Architecture: x86_64.
+- The default menu entry erases the whole disk you select after you
+  type its name. Back up first. Do not use the separate
+  “AUTOMATIC INSTALL - ERASES ALL DISKS” entry unless you intend to
+  wipe every disk.
+- If you want the NVIDIA akmod driver, turn Secure Boot off in
+  firmware before installing. That driver is unsigned and will not
+  load with Secure Boot enabled; otherwise the system stays on
+  nouveau. Machines without an NVIDIA GPU can leave Secure Boot on.
+- The desktop needs a display adapter with a render device. Basic
+  adapters (for example QEMU `-vga std`) can show a “no render
+  device” message instead of a desktop. In a VM, use a virtio GPU.
 
-Neovim (`<Space>` leader): `<leader>e` tree, `<leader>t` terminal,
-`<leader>f` FZF, `gd`/`K` LSP. `:q` / `:wq` quit nvim entirely.
-Language servers lua-language-server, marksman (`avalonos-nvim-lsp`, pinned
-by version and sha256) and bash-language-server (Fedora) are installed;
-nothing is downloaded on first start.
+## Help
 
-Neovim plugins are vendored as shipped under
-`overlay/usr/share/AvalonOS/nvim/pack/avalon/start/` (SHAs in
-`docs/packages/nvim-plugins.md`). The tree-sitter parsers are
-compiled from pinned grammar sources at build time
-(`packaging/rpm/avalonos-nvim-parsers.spec`, revisions in
-`packaging/rpm/nvim-parser-info/`); no prebuilt binaries are committed.
+- [GitHub Issues](https://github.com/AvalonWaveSoftware/AvalonOS/issues)
+- [AvalonWave Software](https://avalonwavesoftware.com)
+
+On an installed system, user documentation is also copied to
+`~/AvalonOS-Docs`.
+
+## License
+
+AvalonOS is licensed under the [Apache License 2.0](LICENSE).
+
+## Further documentation
+
+- [How-to-Install.md](How-to-Install.md) — USB install, first login, troubleshooting
+- [docs/RELEASE-NOTES.md](docs/RELEASE-NOTES.md) — release notes for v0.1.0-9
+- [docs/iso.md](docs/iso.md) — installer ISO, signature checks, and rebuilds
+- [docs/decisions/](docs/decisions/) — design decisions (including niri and the first-boot Obsidian exception)
+- [docs/hardware.md](docs/hardware.md) — reference laptop used in development, not a minimum-spec list
+
+This repository is the source for the netinst installer ISO. Rebuild
+steps are in `docs/iso.md`.
